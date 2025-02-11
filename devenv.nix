@@ -6,8 +6,6 @@
   # https://devenv.sh/packages/
   packages = with pkgs; [ 
     avrdude
-    arduino-cli
-    arduino-ide
     pkgsCross.avr.stdenv.cc
     pkgsCross.avr.stdenv.cc.libc
     ravedude
@@ -17,7 +15,7 @@
   # https://devenv.sh/languages/
   languages.rust = {
     enable = true;
-    channel = "stable";
+    channel = "nightly";
     components = [ "rustc" "cargo" "clippy" "rustfmt" "rust-analyzer" "rust-src" ];
   };
 
