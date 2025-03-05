@@ -2,7 +2,8 @@
 target = "avr-specs/avr-atmega328p.json"
 
 [target.'cfg(target_arch = "avr")']
-runner = "ravedude uno -cb 57600"
+# runner = "ravedude uno -cb 57600"
+runner = "qemu-system-avr -nographic -machine uno -serial mon:stdio -bios" 
 
 [unstable]
 build-std = ["core"]
