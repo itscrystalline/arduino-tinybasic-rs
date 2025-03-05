@@ -147,8 +147,8 @@ fn main() -> ! {
                     break;
                 }
                 _ => {
-                    let c = char_u8 as char;
-                    if let Ok(_) = input_buffer.try_push(c) {
+                    let c = (char_u8 as char).to_ascii_uppercase();
+                    if input_buffer.try_push(c).is_ok() {
                         uwrite!(&mut serial, "{}", c).unwrap_infallible();
                     }
                 }
