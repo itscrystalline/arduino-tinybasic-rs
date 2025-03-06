@@ -1,0 +1,17 @@
+{
+    "$schema": "https://raw.githubusercontent.com/mfussenegger/dapconfig-schema/master/dapconfig-schema.json",
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "cppdbg",
+            "request": "attach",
+            "name": "Attach to gdbserver",
+            "executable": "${workspaceRoot}/target/avr-atmega328p/debug/arduino.elf",
+            "target": ":1234",
+            "remote": true,
+            "cwd": "${workspaceRoot}/src",
+            "valuesFormatting": "parseText",
+            "gdbpath": "/nix/store/wplxj47zl5y5hslzcy8ibwvhvxs87i69-gdb-15.2/bin/gdb"
+        }
+    ]
+}

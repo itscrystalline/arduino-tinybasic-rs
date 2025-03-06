@@ -10,7 +10,7 @@
     pkgsCross.avr.stdenv.cc.libc
     ravedude
     cargo-generate
-    qemu
+    simavr
   ];
 
   # https://devenv.sh/languages/

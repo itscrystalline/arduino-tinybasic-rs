@@ -11,7 +11,7 @@ test = false
 bench = false
 
 [dependencies]
-panic-halt = "0.2.0"
+panic-halt = "1.0.0"
 ufmt = "0.2.0"
 nb = "1.1.0"
 embedded-hal = "1.0"
@@ -21,6 +21,10 @@ arrayvec = { version = "0.7.3", default-features = false }
 git = "https://github.com/rahix/avr-hal"
 rev = "3c089795cadbbc7fa83f45958128689fee7ba1e4"
 features = ["arduino-uno"]
+
+[dependencies.avr-device]
+version = "0.7.0"
+features = ["atmega328p"]
 
 # The latest releases of `proc-macro2` do not support the rust toolchain that
 # we use.  Thus, we must fix this dependency to an older version where our

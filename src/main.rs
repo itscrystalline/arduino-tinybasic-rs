@@ -11,13 +11,14 @@ use ufmt::{uwrite, uwriteln};
 const RETURN_ASCII: u8 = 13; //\r
 const LINE_LENGTH: usize = 64;
 
-struct BasicLine(u8, BasicCommand);
 #[derive(Copy, Clone)]
 enum BasicCommand {
     Print(ArrayString<32>),
     Rem,
 }
 
+#[derive(Copy, Clone, Debug)]
+#[repr(u8)]
 enum Token {
     Number(u8),
     Keyword(Keyword),
@@ -25,7 +26,8 @@ enum Token {
     RelationOperator(Operator),
     Variable(char),
 }
-
+#[repr(u8)]
+#[derive(Copy, Clone, Debug)]
 enum Operator {
     Equal,     // =
     NotEqual,  // <>
@@ -47,7 +49,8 @@ impl Operator {
         }
     }
 }
-
+#[repr(u8)]
+#[derive(Copy, Clone, Debug)]
 enum Keyword {
     Print,
     If,
@@ -82,6 +85,7 @@ impl Keyword {
     }
 }
 
+#[derive(Debug)]
 enum ParseError {
     Malformed,
     TooManyTokens,
@@ -89,12 +93,13 @@ enum ParseError {
 }
 
 impl Token {
-    fn tokenize(str: &ArrayString<64>) -> Result<ArrayVec<Token, 64>, ParseError> {
-        let mut tokens = ArrayVec::<Token, 64>::new();
+    fn tokenize(str: &ArrayString<64>) -> Result<ArrayVec<Token, 16>, ParseError> {
+        let mut tokens = ArrayVec::<Token, 16>::new();
         let mut number_buffer: Option<u8> = None;
         let mut string_buffer: Option<ArrayString<32>> = None;
         let mut keyword_buffer: Option<ArrayString<6>> = None;
         for ch in str.chars() {
+            // FIXME: ts anit working sis
             match ch {
                 ' ' => {
                     if let Some(number) = number_buffer {
@@ -113,6 +118,7 @@ impl Token {
                                 .try_push(Token::Keyword(kw))
                                 .map_err(|_| ParseError::TooManyTokens)?,
                         }
+                        keyword_buffer = None
                     }
                 }
                 '"' => match string_buffer {
@@ -151,17 +157,41 @@ impl Token {
                             }
                         }
                         None => {
-                            let mut buf = ArrayString::<6>::new();
-                            if buf.try_push(char).is_err() {
+                            let mut kw_buf = ArrayString::<6>::new();
+                            if kw_buf.try_push(char).is_err() {
                                 return Err(ParseError::Capacity);
                             }
-                            keyword_buffer = Some(buf);
+                            keyword_buffer = Some(kw_buf);
                         }
                     },
                 },
             }
         }
-
+        if let Some(number) = number_buffer {
+            match tokens.try_push(Token::Number(number)) {
+                Ok(_) => (),
+                Err(e) => return Err(ParseError::Capacity),
+            }
+        }
+        if let Some(string) = string_buffer {
+            match tokens.try_push(Token::String(string)) {
+                Ok(_) => (),
+                Err(e) => return Err(ParseError::Capacity),
+            }
+        }
+        if let Some(keyword) = keyword_buffer {
+            match Keyword::from(keyword) {
+                Err(_) => match Operator::from(keyword) {
+                    Err(_) => return Err(ParseError::Malformed),
+                    Ok(op) => tokens
+                        .try_push(Token::RelationOperator(op))
+                        .map_err(|_| ParseError::TooManyTokens)?,
+                },
+                Ok(kw) => tokens
+                    .try_push(Token::Keyword(kw))
+                    .map_err(|_| ParseError::TooManyTokens)?,
+            }
+        }
         Ok(tokens)
     }
 }
@@ -173,8 +203,45 @@ fn main() -> ! {
     let mut serial = arduino_hal::default_serial!(dp, pins, 57200);
 
     uwriteln!(&mut serial, "Starting TinyBASIC...\r").unwrap_infallible();
+    uwriteln!(
+        &mut serial,
+        "program buffer size: {}\r",
+        size_of::<[Option<BasicCommand>; 512]>()
+    )
+    .unwrap_infallible();
+    uwriteln!(
+        &mut serial,
+        "input buffer size: {}\r",
+        size_of::<ArrayString<64>>()
+    )
+    .unwrap_infallible();
+    uwriteln!(
+        &mut serial,
+        "token buffer size: {}\r",
+        size_of::<ArrayVec<Token, 16>>()
+    )
+    .unwrap_infallible();
+    uwriteln!(
+        &mut serial,
+        "number buffer size: {}\r",
+        size_of::<Option<u8>>()
+    )
+    .unwrap_infallible();
+    uwriteln!(
+        &mut serial,
+        "string buffer size: {}\r",
+        size_of::<Option<ArrayString<32>>>()
+    )
+    .unwrap_infallible();
+    uwriteln!(
+        &mut serial,
+        "keyword buffer size: {}\r",
+        size_of::<Option<ArrayString<6>>>()
+    )
+    .unwrap_infallible();
 
-    let program_buffer: [Option<BasicCommand>; 128] = [None; 128];
+    let mut program: [Option<BasicCommand>; 512] = [None; 512];
+
     let mut input_buffer = ArrayString::<64>::new();
     loop {
         uwrite!(&mut serial, "> ").unwrap_infallible();
@@ -182,14 +249,24 @@ fn main() -> ! {
             let char_u8 = serial.read_byte();
             match char_u8 {
                 RETURN_ASCII => {
-                    // TODO: figure out why this resets the board
                     uwriteln!(&mut serial, "\r").unwrap_infallible();
                     match Token::tokenize(&input_buffer) {
                         Ok(tokens) => {
                             uwriteln!(&mut serial, "parse ok {} tokens\r", tokens.len())
                                 .unwrap_infallible();
-                            for ele in tokens.iter() {
-                                uwrite!(&mut serial, "token ").unwrap_infallible();
+                            for token in tokens {
+                                match token {
+                                    Token::Number(num) => uwrite!(&mut serial, "num{} ", num),
+                                    Token::String(str) => {
+                                        uwrite!(&mut serial, "strlen{} ", str.len())
+                                    }
+                                    Token::RelationOperator(op) => {
+                                        uwrite!(&mut serial, "op ")
+                                    }
+                                    _ => uwrite!(&mut serial, "token "),
+                                }
+                                .unwrap_infallible();
+                                uwriteln!(&mut serial, "\r").unwrap_infallible();
                             }
                         }
                         Err(e) => match e {
