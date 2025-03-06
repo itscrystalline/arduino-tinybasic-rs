@@ -85,10 +85,11 @@ impl Keyword {
 enum ParseError {
     Malformed,
     TooManyTokens,
+    Capacity,
 }
 
 impl Token {
-    fn tokenize(str: ArrayString<64>) -> Result<ArrayVec<Token, 64>, ParseError> {
+    fn tokenize(str: &ArrayString<64>) -> Result<ArrayVec<Token, 64>, ParseError> {
         let mut tokens = ArrayVec::<Token, 64>::new();
         let mut number_buffer: Option<u8> = None;
         let mut string_buffer: Option<ArrayString<32>> = None;
@@ -116,7 +117,10 @@ impl Token {
                 }
                 '"' => match string_buffer {
                     Some(string) => {
-                        tokens.push(Token::String(string));
+                        match tokens.try_push(Token::String(string)) {
+                            Ok(_) => {}
+                            Err(e) => return Err(ParseError::TooManyTokens),
+                        };
                         string_buffer = None;
                     }
                     None => string_buffer = Some(ArrayString::new()),
@@ -125,18 +129,32 @@ impl Token {
                     let num = num_ch as u8 - 48;
                     match (number_buffer, string_buffer) {
                         (Some(ref mut number), None) => *number = *number * 10 + num,
-                        (None, Some(ref mut str)) => str.push(num_ch),
+                        (None, Some(ref mut str)) => {
+                            if str.try_push(num_ch).is_err() {
+                                return Err(ParseError::Capacity);
+                            }
+                        }
                         (None, None) => number_buffer = Some(num),
                         _ => (),
                     }
                 }
                 char => match string_buffer {
-                    Some(mut string) => string.push(char),
+                    Some(mut string) => {
+                        if string.try_push(char).is_err() {
+                            return Err(ParseError::Capacity);
+                        }
+                    }
                     None => match keyword_buffer {
-                        Some(mut keyword) => keyword.push(char),
+                        Some(mut keyword) => {
+                            if keyword.try_push(char).is_err() {
+                                return Err(ParseError::Capacity);
+                            }
+                        }
                         None => {
                             let mut buf = ArrayString::<6>::new();
-                            buf.push(char);
+                            if buf.try_push(char).is_err() {
+                                return Err(ParseError::Capacity);
+                            }
                             keyword_buffer = Some(buf);
                         }
                     },
@@ -154,26 +172,46 @@ fn main() -> ! {
     let pins = arduino_hal::pins!(dp);
     let mut serial = arduino_hal::default_serial!(dp, pins, 57200);
 
-    uwriteln!(&mut serial, "Starting TinyBASIC...").unwrap_infallible();
+    uwriteln!(&mut serial, "Starting TinyBASIC...\r").unwrap_infallible();
 
     let program_buffer: [Option<BasicCommand>; 128] = [None; 128];
-
+    let mut input_buffer = ArrayString::<64>::new();
     loop {
-        let mut input_buffer = ArrayString::<64>::new();
         uwrite!(&mut serial, "> ").unwrap_infallible();
         loop {
             let char_u8 = serial.read_byte();
             match char_u8 {
                 RETURN_ASCII => {
                     // TODO: figure out why this resets the board
-                    //let _tokens = Token::tokenize(input_buffer);
-                    uwriteln!(&mut serial, "").unwrap_infallible();
+                    uwriteln!(&mut serial, "\r").unwrap_infallible();
+                    match Token::tokenize(&input_buffer) {
+                        Ok(tokens) => {
+                            uwriteln!(&mut serial, "parse ok {} tokens\r", tokens.len())
+                                .unwrap_infallible();
+                            for ele in tokens.iter() {
+                                uwrite!(&mut serial, "token ").unwrap_infallible();
+                            }
+                        }
+                        Err(e) => match e {
+                            ParseError::TooManyTokens => {
+                                uwriteln!(&mut serial, "too many tokens\r").unwrap_infallible()
+                            }
+                            ParseError::Malformed => {
+                                uwriteln!(&mut serial, "malformed\r").unwrap_infallible()
+                            }
+                            ParseError::Capacity => {
+                                uwriteln!(&mut serial, "str cap full").unwrap_infallible();
+                            }
+                        },
+                    }
+                    input_buffer.clear();
                     break;
                 }
                 _ => {
                     let c = (char_u8 as char).to_ascii_uppercase();
-                    if input_buffer.try_push(c).is_ok() {
-                        uwrite!(&mut serial, "{}", c).unwrap_infallible();
+                    match input_buffer.try_push(c) {
+                        Ok(_) => uwrite!(&mut serial, "{}", c).unwrap_infallible(),
+                        Err(e) => uwrite!(&mut serial, "cannot put chr in").unwrap_infallible(),
                     }
                 }
             }
