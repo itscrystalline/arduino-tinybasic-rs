@@ -3,7 +3,7 @@
 
 use core::char;
 
-use arduino_hal::prelude::_unwrap_infallible_UnwrapInfallible;
+use arduino_hal::prelude::*;
 use arrayvec::{ArrayString, ArrayVec};
 use panic_halt as _;
 use ufmt::{uwrite, uwriteln};
@@ -27,15 +27,28 @@ enum Token {
 }
 
 enum Operator {
-    Equal,
-    Less,
-    More,
-    LessEqual,
-    MoreEqual,
+    Equal,     // =
+    NotEqual,  // <>
+    Less,      // <
+    More,      // >
+    LessEqual, // <=
+    MoreEqual, // >=
+}
+impl Operator {
+    fn from(buf: ArrayString<6>) -> Result<Self, InvalidKeywordError> {
+        match buf.as_str() {
+            "=" => Ok(Operator::Equal),
+            "<>" => Ok(Operator::NotEqual),
+            "<" => Ok(Operator::Less),
+            ">" => Ok(Operator::More),
+            "<=" => Ok(Operator::LessEqual),
+            ">=" => Ok(Operator::MoreEqual),
+            _ => Err(InvalidKeywordError),
+        }
+    }
 }
 
 enum Keyword {
-    Invalid,
     Print,
     If,
     Goto,
@@ -48,28 +61,30 @@ enum Keyword {
     Run,
     End,
 }
+struct InvalidKeywordError;
 
-impl From<ArrayString<6>> for Keyword {
-    fn from(value: ArrayString<6>) -> Self {
+impl Keyword {
+    fn from(value: ArrayString<6>) -> Result<Self, InvalidKeywordError> {
         match value.as_str() {
-            "PRINT" => Keyword::Print,
-            "IF" => Keyword::If,
-            "GOTO" => Keyword::Goto,
-            "INPUT" => Keyword::Input,
-            "LET" => Keyword::Let,
-            "GOSUB" => Keyword::GoSub,
-            "RETURN" => Keyword::Return,
-            "CLEAR" => Keyword::Clear,
-            "LIST" => Keyword::List,
-            "RUN" => Keyword::Run,
-            "END" => Keyword::End,
-            _ => Keyword::Invalid,
+            "PRINT" => Ok(Keyword::Print),
+            "IF" => Ok(Keyword::If),
+            "GOTO" => Ok(Keyword::Goto),
+            "INPUT" => Ok(Keyword::Input),
+            "LET" => Ok(Keyword::Let),
+            "GOSUB" => Ok(Keyword::GoSub),
+            "RETURN" => Ok(Keyword::Return),
+            "CLEAR" => Ok(Keyword::Clear),
+            "LIST" => Ok(Keyword::List),
+            "RUN" => Ok(Keyword::Run),
+            "END" => Ok(Keyword::End),
+            _ => Err(InvalidKeywordError),
         }
     }
 }
 
 enum ParseError {
     Malformed,
+    TooManyTokens,
 }
 
 impl Token {
@@ -78,7 +93,7 @@ impl Token {
         let mut number_buffer: Option<u8> = None;
         let mut string_buffer: Option<ArrayString<32>> = None;
         let mut keyword_buffer: Option<ArrayString<6>> = None;
-        for (idx, ch) in str.char_indices() {
+        for ch in str.chars() {
             match ch {
                 ' ' => {
                     if let Some(number) = number_buffer {
@@ -87,8 +102,15 @@ impl Token {
                     }
                     if let Some(keyword) = keyword_buffer {
                         match Keyword::from(keyword) {
-                            Keyword::Invalid => return Err(ParseError::Malformed),
-                            kw => tokens.push(Token::Keyword(kw)),
+                            Err(_) => match Operator::from(keyword) {
+                                Err(_) => return Err(ParseError::Malformed),
+                                Ok(op) => tokens
+                                    .try_push(Token::RelationOperator(op))
+                                    .map_err(|_| ParseError::TooManyTokens)?,
+                            },
+                            Ok(kw) => tokens
+                                .try_push(Token::Keyword(kw))
+                                .map_err(|_| ParseError::TooManyTokens)?,
                         }
                     }
                 }
@@ -97,7 +119,7 @@ impl Token {
                         tokens.push(Token::String(string));
                         string_buffer = None;
                     }
-                    None => string_buffer = Some(ArrayString::zero_filled()),
+                    None => string_buffer = Some(ArrayString::new()),
                 },
                 num_ch if num_ch.is_ascii_digit() => {
                     let num = num_ch as u8 - 48;
@@ -105,7 +127,7 @@ impl Token {
                         (Some(ref mut number), None) => *number = *number * 10 + num,
                         (None, Some(ref mut str)) => str.push(num_ch),
                         (None, None) => number_buffer = Some(num),
-                        _ => unreachable!(),
+                        _ => (),
                     }
                 }
                 char => match string_buffer {
@@ -137,13 +159,15 @@ fn main() -> ! {
     let program_buffer: [Option<BasicCommand>; 128] = [None; 128];
 
     loop {
-        let mut input_buffer = ArrayString::<64>::zero_filled();
+        let mut input_buffer = ArrayString::<64>::new();
+        uwrite!(&mut serial, "> ").unwrap_infallible();
         loop {
             let char_u8 = serial.read_byte();
             match char_u8 {
                 RETURN_ASCII => {
+                    // TODO: figure out why this resets the board
+                    //let _tokens = Token::tokenize(input_buffer);
                     uwriteln!(&mut serial, "").unwrap_infallible();
-                    uwrite!(&mut serial, "> ").unwrap_infallible();
                     break;
                 }
                 _ => {
