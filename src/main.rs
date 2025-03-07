@@ -6,7 +6,7 @@ use core::char;
 use arduino_hal::prelude::*;
 use arrayvec::{ArrayString, ArrayVec};
 use panic_halt as _;
-use ufmt::{uwrite, uwriteln};
+use ufmt::{derive::uDebug, uwrite, uwriteln};
 
 const RETURN_ASCII: u8 = 13; //\r
 const LINE_LENGTH: usize = 64;
@@ -27,7 +27,7 @@ enum Token {
     Variable(char),
 }
 #[repr(u8)]
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, uDebug)]
 enum Operator {
     Equal,     // =
     NotEqual,  // <>
@@ -50,7 +50,7 @@ impl Operator {
     }
 }
 #[repr(u8)]
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, uDebug)]
 enum Keyword {
     Print,
     If,
@@ -99,26 +99,32 @@ impl Token {
         let mut string_buffer: Option<ArrayString<32>> = None;
         let mut keyword_buffer: Option<ArrayString<6>> = None;
         for ch in str.chars() {
-            // FIXME: ts anit working sis
             match ch {
                 ' ' => {
-                    if let Some(number) = number_buffer {
-                        tokens.push(Token::Number(number));
-                        number_buffer = None;
-                    }
-                    if let Some(keyword) = keyword_buffer {
-                        match Keyword::from(keyword) {
-                            Err(_) => match Operator::from(keyword) {
-                                Err(_) => return Err(ParseError::Malformed),
-                                Ok(op) => tokens
-                                    .try_push(Token::RelationOperator(op))
-                                    .map_err(|_| ParseError::TooManyTokens)?,
-                            },
-                            Ok(kw) => tokens
-                                .try_push(Token::Keyword(kw))
-                                .map_err(|_| ParseError::TooManyTokens)?,
+                    if let Some(mut string) = string_buffer {
+                        if string.try_push(ch).is_err() {
+                            return Err(ParseError::Capacity);
                         }
-                        keyword_buffer = None
+                        _ = string_buffer.insert(string);
+                    } else {
+                        if let Some(number) = number_buffer {
+                            tokens.push(Token::Number(number));
+                            number_buffer = None;
+                        }
+                        if let Some(keyword) = keyword_buffer {
+                            match Keyword::from(keyword) {
+                                Err(_) => match Operator::from(keyword) {
+                                    Err(_) => return Err(ParseError::Malformed),
+                                    Ok(op) => tokens
+                                        .try_push(Token::RelationOperator(op))
+                                        .map_err(|_| ParseError::TooManyTokens)?,
+                                },
+                                Ok(kw) => tokens
+                                    .try_push(Token::Keyword(kw))
+                                    .map_err(|_| ParseError::TooManyTokens)?,
+                            }
+                            keyword_buffer = None
+                        }
                     }
                 }
                 '"' => match string_buffer {
@@ -134,11 +140,14 @@ impl Token {
                 num_ch if num_ch.is_ascii_digit() => {
                     let num = num_ch as u8 - 48;
                     match (number_buffer, string_buffer) {
-                        (Some(ref mut number), None) => *number = *number * 10 + num,
-                        (None, Some(ref mut str)) => {
+                        (Some(number), None) => {
+                            _ = number_buffer.insert(number * 10 + num);
+                        }
+                        (None, Some(mut str)) => {
                             if str.try_push(num_ch).is_err() {
                                 return Err(ParseError::Capacity);
                             }
+                            _ = string_buffer.insert(str);
                         }
                         (None, None) => number_buffer = Some(num),
                         _ => (),
@@ -149,12 +158,14 @@ impl Token {
                         if string.try_push(char).is_err() {
                             return Err(ParseError::Capacity);
                         }
+                        _ = string_buffer.insert(string);
                     }
                     None => match keyword_buffer {
                         Some(mut keyword) => {
                             if keyword.try_push(char).is_err() {
                                 return Err(ParseError::Capacity);
                             }
+                            _ = keyword_buffer.insert(keyword)
                         }
                         None => {
                             let mut kw_buf = ArrayString::<6>::new();
@@ -168,15 +179,13 @@ impl Token {
             }
         }
         if let Some(number) = number_buffer {
-            match tokens.try_push(Token::Number(number)) {
-                Ok(_) => (),
-                Err(e) => return Err(ParseError::Capacity),
+            if tokens.try_push(Token::Number(number)).is_err() {
+                return Err(ParseError::Capacity);
             }
         }
         if let Some(string) = string_buffer {
-            match tokens.try_push(Token::String(string)) {
-                Ok(_) => (),
-                Err(e) => return Err(ParseError::Capacity),
+            if tokens.try_push(Token::String(string)).is_err() {
+                return Err(ParseError::Capacity);
             }
         }
         if let Some(keyword) = keyword_buffer {
@@ -261,7 +270,10 @@ fn main() -> ! {
                                         uwrite!(&mut serial, "strlen{} ", str.len())
                                     }
                                     Token::RelationOperator(op) => {
-                                        uwrite!(&mut serial, "op ")
+                                        uwrite!(&mut serial, "op{:?} ", op)
+                                    }
+                                    Token::Keyword(kw) => {
+                                        uwrite!(&mut serial, "kw{:?}", kw)
                                     }
                                     _ => uwrite!(&mut serial, "token "),
                                 }
