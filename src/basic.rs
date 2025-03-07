@@ -6,16 +6,6 @@ use crate::Serial;
 
 const A_ORD: u8 = b'A';
 
-#[derive(Copy, Clone)]
-pub enum BasicCommand {
-    Print(Option<ArrayString<32>>),
-    Run,
-    Goto(Option<u8>),
-    End,
-    List,
-    Clear,
-    Rem,
-}
 #[derive(PartialEq, Eq)]
 pub enum BasicControlFlow {
     Run,
@@ -24,11 +14,6 @@ pub enum BasicControlFlow {
     List,
     Clear,
     Goto(u8),
-}
-#[derive(Copy, Clone)]
-pub struct BasicLine {
-    pub line_num: Option<usize>,
-    pub command: BasicCommand,
 }
 pub enum InterpretationError {
     UnexpectedArgs,
@@ -41,14 +26,104 @@ pub enum ExpectedArgument {
     Number,
     String,
 }
+#[derive(Copy, Clone)]
+pub enum MathToken {
+    Literal(u8),
+    Variable(u8),
+}
+#[derive(Clone)]
+pub enum Expression {
+    String(ArrayString<32>),
+    Math(ArrayVec<MathToken, 10>, ArrayVec<MathOperator, 8>),
+}
+pub enum EvaluationError {
+    Incomplete,
+    Overflow,
+    Underflow,
+    DivideByZero,
+}
+impl Expression {
+    fn evaluate_math(
+        mut numbers: ArrayVec<MathToken, 10>,
+        mut ops: ArrayVec<MathOperator, 8>,
+        variables: &mut [u8],
+    ) -> Result<u8, EvaluationError> {
+        while let Some(op) = ops.pop() {
+            let (rhs, lhs) = (
+                numbers.pop().ok_or(EvaluationError::Incomplete)?,
+                numbers.pop().ok_or(EvaluationError::Incomplete)?,
+            );
+            let rhs_num = match rhs {
+                MathToken::Literal(n) => n,
+                MathToken::Variable(idx) => variables[idx as usize],
+            };
+            let lhs_num = match lhs {
+                MathToken::Literal(n) => n,
+                MathToken::Variable(idx) => variables[idx as usize],
+            };
+            numbers.push(MathToken::Literal(match op {
+                MathOperator::Plus => lhs_num
+                    .checked_add(rhs_num)
+                    .ok_or(EvaluationError::Overflow),
+                MathOperator::Minus => lhs_num
+                    .checked_sub(rhs_num)
+                    .ok_or(EvaluationError::Underflow),
+                MathOperator::Multiply => lhs_num
+                    .checked_mul(rhs_num)
+                    .ok_or(EvaluationError::Overflow),
+                MathOperator::Divide => lhs_num
+                    .checked_div(rhs_num)
+                    .ok_or(EvaluationError::DivideByZero),
+            }?));
+        }
+        match numbers.pop() {
+            Some(MathToken::Literal(res)) => Ok(res),
+            _ => Err(EvaluationError::Incomplete),
+        }
+    }
+}
 
+#[derive(Clone)]
+pub enum BasicCommand {
+    Print(Option<Expression>),
+    Run,
+    Goto(Option<u8>),
+    End,
+    List,
+    Clear,
+    Let(Option<u8>),
+    Rem,
+}
 impl BasicCommand {
-    pub fn execute(self, serial: &mut Serial) -> BasicControlFlow {
+    pub fn execute(&self, serial: &mut Serial, variables: &mut [u8]) -> BasicControlFlow {
         match self {
-            BasicCommand::Print(str) if str.is_some() => {
-                let str = str.unwrap();
-                str.chars()
-                    .for_each(|ch| uwrite!(serial, "{}", ch).unwrap_infallible());
+            BasicCommand::Print(Some(expr)) => {
+                match expr {
+                    Expression::String(str) => str
+                        .chars()
+                        .for_each(|ch| uwrite!(serial, "{}", ch).unwrap_infallible()),
+                    Expression::Math(numbers, operators) => {
+                        let result = Expression::evaluate_math(
+                            numbers.clone(),
+                            operators.clone(),
+                            variables,
+                        );
+                        match result {
+                            Ok(res) => uwrite!(serial, "{}", res),
+                            Err(e) => match e {
+                                EvaluationError::Incomplete => {
+                                    uwrite!(serial, "incomplete expression")
+                                }
+                                EvaluationError::Overflow => uwrite!(serial, "value overflowed"),
+                                EvaluationError::Underflow => uwrite!(serial, "value underflowed"),
+                                EvaluationError::DivideByZero => {
+                                    uwrite!(serial, "division by zero")
+                                }
+                            },
+                        }
+                        .unwrap_infallible();
+                    }
+                }
                 uwriteln!(serial, "").unwrap_infallible();
             }
             BasicCommand::Run => return BasicControlFlow::Run,
@@ -64,9 +139,14 @@ impl BasicCommand {
         BasicControlFlow::Continue
     }
 }
+#[derive(Clone)]
+pub struct BasicLine {
+    pub line_num: Option<usize>,
+    pub command: BasicCommand,
+}
 impl BasicLine {
-    pub fn execute(self, serial: &mut Serial) -> BasicControlFlow {
-        self.command.execute(serial)
+    pub fn execute(self, serial: &mut Serial, variables: &mut [u8]) -> BasicControlFlow {
+        self.command.execute(serial, variables)
     }
 
     pub fn from_tokens(tokens: ArrayVec<Token, 8>) -> Result<BasicLine, InterpretationError> {
@@ -116,20 +196,29 @@ impl BasicLine {
                             command = BasicCommand::Goto(None);
                             expected = Some(ExpectedArgument::Number);
                         }
+                        Keyword::Let => {
+                            command = BasicCommand::Let(None);
+                            expected = Some(ExpectedArgument::Number);
+                        }
                         _ => todo!(),
                     },
                     Token::String(str) => {
                         if let BasicCommand::Print(_) = command {
-                            command = BasicCommand::Print(Some(str));
+                            command = BasicCommand::Print(Some(Expression::String(str)));
                             expected = None;
                         }
                     }
-                    Token::Number(num) => {
-                        if let BasicCommand::Goto(_) = command {
+                    Token::Number(num) => match command {
+                        BasicCommand::Goto(_) => {
                             command = BasicCommand::Goto(Some(num));
                             expected = None;
                         }
-                    }
+                        BasicCommand::Let(_) => {
+                            command = BasicCommand::Let(Some(num));
+                            expected = None;
+                        }
+                        _ => (),
+                    },
                     _ => todo!(),
                 }
             } else {
@@ -148,16 +237,27 @@ impl BasicLine {
     }
 }
 
-#[derive(Copy, Clone, Debug)]
-pub enum Token {
-    Number(u8),
-    Keyword(Keyword),
-    String(ArrayString<32>),
-    RelationOperator(Operator),
-    Variable(u8),
-}
 #[derive(Copy, Clone, Debug, uDebug)]
-enum Operator {
+enum MathOperator {
+    Plus,
+    Minus,
+    Multiply,
+    Divide,
+}
+impl MathOperator {
+    fn from(buf: ArrayString<6>) -> Result<Self, InvalidKeywordError> {
+        match buf.as_str() {
+            "+" => Ok(MathOperator::Plus),
+            "-" => Ok(MathOperator::Minus),
+            "*" => Ok(MathOperator::Multiply),
+            "/" => Ok(MathOperator::Divide),
+            _ => Err(InvalidKeywordError),
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug, uDebug)]
+enum RelationOperator {
     Equal,     // =
     NotEqual,  // <>
     Less,      // <
@@ -165,19 +265,20 @@ enum Operator {
     LessEqual, // <=
     MoreEqual, // >=
 }
-impl Operator {
+impl RelationOperator {
     fn from(buf: ArrayString<6>) -> Result<Self, InvalidKeywordError> {
         match buf.as_str() {
-            "=" => Ok(Operator::Equal),
-            "<>" => Ok(Operator::NotEqual),
-            "<" => Ok(Operator::Less),
-            ">" => Ok(Operator::More),
-            "<=" => Ok(Operator::LessEqual),
-            ">=" => Ok(Operator::MoreEqual),
+            "=" => Ok(RelationOperator::Equal),
+            "<>" => Ok(RelationOperator::NotEqual),
+            "<" => Ok(RelationOperator::Less),
+            ">" => Ok(RelationOperator::More),
+            "<=" => Ok(RelationOperator::LessEqual),
+            ">=" => Ok(RelationOperator::MoreEqual),
             _ => Err(InvalidKeywordError),
         }
     }
 }
+
 #[derive(Copy, Clone, Debug, uDebug)]
 pub enum Keyword {
     Print,
@@ -213,11 +314,20 @@ impl Keyword {
     }
 }
 
-#[derive(uDebug)]
+#[derive(Copy, Clone, Debug)]
+pub enum Token {
+    Number(u8),
+    Keyword(Keyword),
+    String(ArrayString<32>),
+    RelationOperator(RelationOperator),
+    MathOperator(MathOperator),
+    Variable(u8),
+}
 pub enum ParseError {
     Malformed,
     TooManyTokens,
     Capacity,
+    NumberOverflow,
 }
 
 impl Token {
@@ -241,18 +351,25 @@ impl Token {
                         }
                         if let Some(keyword) = keyword_buffer {
                             match Keyword::from(keyword) {
-                                Err(_) => match Operator::from(keyword) {
-                                    Err(_) => {
-                                        if keyword.len() == 1 {
-                                            let var_ord =
-                                                keyword.chars().next().map_or(A_ORD, |ch| ch as u8);
-                                            tokens
-                                                .try_push(Token::Variable(var_ord - A_ORD))
-                                                .map_err(|_| ParseError::TooManyTokens)?;
-                                        } else {
-                                            return Err(ParseError::Malformed);
+                                Err(_) => match RelationOperator::from(keyword) {
+                                    Err(_) => match MathOperator::from(keyword) {
+                                        Err(_) => {
+                                            if keyword.len() == 1 {
+                                                let var_ord = keyword
+                                                    .chars()
+                                                    .next()
+                                                    .map_or(b'A', |ch| ch as u8);
+                                                tokens
+                                                    .try_push(Token::Variable(var_ord - b'A'))
+                                                    .map_err(|_| ParseError::TooManyTokens)?;
+                                            } else {
+                                                return Err(ParseError::Malformed);
+                                            }
                                         }
-                                    }
+                                        Ok(op) => tokens
+                                            .try_push(Token::MathOperator(op))
+                                            .map_err(|_| ParseError::TooManyTokens)?,
+                                    },
                                     Ok(op) => tokens
                                         .try_push(Token::RelationOperator(op))
                                         .map_err(|_| ParseError::TooManyTokens)?,
@@ -275,10 +392,15 @@ impl Token {
                     None => string_buffer = Some(ArrayString::new()),
                 },
                 num_ch if num_ch.is_ascii_digit() => {
-                    let num = num_ch as u8 - 48;
+                    let num = num_ch as u8 - b'0';
                     match (number_buffer, string_buffer) {
                         (Some(number), None) => {
-                            _ = number_buffer.insert(number * 10 + num);
+                            let new_number = number
+                                .checked_mul(10)
+                                .ok_or(ParseError::NumberOverflow)?
+                                .checked_add(num)
+                                .ok_or(ParseError::NumberOverflow)?;
+                            _ = number_buffer.insert(new_number);
                         }
                         (None, Some(mut str)) => {
                             if str.try_push(num_ch).is_err() {
@@ -327,7 +449,7 @@ impl Token {
         }
         if let Some(keyword) = keyword_buffer {
             match Keyword::from(keyword) {
-                Err(_) => match Operator::from(keyword) {
+                Err(_) => match RelationOperator::from(keyword) {
                     Err(_) => return Err(ParseError::Malformed),
                     Ok(op) => tokens
                         .try_push(Token::RelationOperator(op))
