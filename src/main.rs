@@ -12,7 +12,7 @@ use panic_halt as _;
 use ufmt::{uwrite, uwriteln};
 
 const RETURN_ASCII: u8 = b'\r';
-//const BACKSPACE_ASCII: u8 = b'\x7f';
+const BACKSPACE_ASCII: u8 = b'\x7f';
 const PROGRAM_LENGTH: usize = 20;
 pub type Serial = arduino_hal::hal::usart::Usart0<arduino_hal::DefaultClock>;
 
@@ -177,11 +177,14 @@ fn main() -> ! {
                         input_buffer.clear();
                         break;
                     }
-                    //BACKSPACE_ASCII => {
-                    //    if input_buffer.pop().is_some() {
-                    //        uwrite!(&mut serial, "\x0c").unwrap_infallible();
-                    //    }
-                    //}
+                    BACKSPACE_ASCII => {
+                        if input_buffer.pop().is_some() {
+                            uwrite!(&mut serial, "\r\n> ").unwrap_infallible();
+                            input_buffer
+                                .chars()
+                                .for_each(|c| uwrite!(&mut serial, "{}", c).unwrap_infallible());
+                        }
+                    }
                     _ => {
                         let c = (char_u8 as char).to_ascii_uppercase();
                         if input_buffer.try_push(c).is_ok() {
