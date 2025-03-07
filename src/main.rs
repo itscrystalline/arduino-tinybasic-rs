@@ -10,11 +10,42 @@ use ufmt::{derive::uDebug, uwrite, uwriteln};
 
 const RETURN_ASCII: u8 = 13; //\r
 const LINE_LENGTH: usize = 64;
+const A_ORD: u8 = b'A';
 
 #[derive(Copy, Clone)]
 enum BasicCommand {
     Print(ArrayString<32>),
     Rem,
+}
+#[derive(Copy, Clone)]
+struct BasicLine {
+    line_num: Option<u8>,
+    command: BasicCommand,
+}
+enum InterpretationError {
+    UnexpectedArgs,
+}
+
+impl BasicLine {
+    fn from_tokens(tokens: ArrayVec<Token, 16>) -> Result<BasicLine, InterpretationError> {
+        let mut line_num = None;
+
+        tokens.into_iter().enumerate().for_each(|(idx, token)| {
+            if idx == 0usize {
+                if let Token::Number(num) = token {
+                    line_num = Some(num)
+                }
+            }
+        });
+        Ok(BasicLine {
+            line_num,
+            command: BasicCommand::Rem,
+        })
+    }
+
+    fn is_immeadiate(&self) -> bool {
+        self.line_num.is_none()
+    }
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -24,7 +55,7 @@ enum Token {
     Keyword(Keyword),
     String(ArrayString<32>),
     RelationOperator(Operator),
-    Variable(char),
+    Variable(u8),
 }
 #[repr(u8)]
 #[derive(Copy, Clone, Debug, uDebug)]
@@ -114,7 +145,17 @@ impl Token {
                         if let Some(keyword) = keyword_buffer {
                             match Keyword::from(keyword) {
                                 Err(_) => match Operator::from(keyword) {
-                                    Err(_) => return Err(ParseError::Malformed),
+                                    Err(_) => {
+                                        if keyword.len() == 1 {
+                                            let var_ord =
+                                                keyword.chars().next().map_or(A_ORD, |ch| ch as u8);
+                                            tokens
+                                                .try_push(Token::Variable(var_ord - A_ORD))
+                                                .map_err(|_| ParseError::TooManyTokens)?;
+                                        } else {
+                                            return Err(ParseError::Malformed);
+                                        }
+                                    }
                                     Ok(op) => tokens
                                         .try_push(Token::RelationOperator(op))
                                         .map_err(|_| ParseError::TooManyTokens)?,
@@ -250,6 +291,7 @@ fn main() -> ! {
     .unwrap_infallible();
 
     let mut program: [Option<BasicCommand>; 512] = [None; 512];
+    let mut variables = [0u8; 26];
 
     let mut input_buffer = ArrayString::<64>::new();
     loop {
@@ -261,25 +303,7 @@ fn main() -> ! {
                     uwriteln!(&mut serial, "\r").unwrap_infallible();
                     match Token::tokenize(&input_buffer) {
                         Ok(tokens) => {
-                            uwriteln!(&mut serial, "parse ok {} tokens\r", tokens.len())
-                                .unwrap_infallible();
-                            for token in tokens {
-                                match token {
-                                    Token::Number(num) => uwrite!(&mut serial, "num{} ", num),
-                                    Token::String(str) => {
-                                        uwrite!(&mut serial, "strlen{} ", str.len())
-                                    }
-                                    Token::RelationOperator(op) => {
-                                        uwrite!(&mut serial, "op{:?} ", op)
-                                    }
-                                    Token::Keyword(kw) => {
-                                        uwrite!(&mut serial, "kw{:?}", kw)
-                                    }
-                                    _ => uwrite!(&mut serial, "token "),
-                                }
-                                .unwrap_infallible();
-                                uwriteln!(&mut serial, "\r").unwrap_infallible();
-                            }
+                            uwriteln!(&mut serial, "\r").unwrap_infallible();
                         }
                         Err(e) => match e {
                             ParseError::TooManyTokens => {
