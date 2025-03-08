@@ -4,8 +4,6 @@ use ufmt::{derive::uDebug, uwrite, uwriteln};
 
 use crate::Serial;
 
-const A_ORD: u8 = b'A';
-
 #[derive(PartialEq, Eq)]
 pub enum BasicControlFlow {
     Run,
@@ -13,7 +11,7 @@ pub enum BasicControlFlow {
     End,
     List,
     Clear,
-    Goto(u8),
+    Goto(usize),
 }
 pub enum InterpretationError {
     UnexpectedArgs,
@@ -27,13 +25,14 @@ pub enum ExpectedArgument {
     Keyword,
     Expression,
     Number,
-    String,
+    //String,
     Variable,
+    Assignment,
 }
 #[derive(Copy, Clone)]
 pub enum MathToken {
-    Literal(u8),
-    Variable(u8),
+    Literal(usize),
+    Variable(usize),
 }
 #[derive(Clone)]
 pub enum Expression {
@@ -50,20 +49,20 @@ impl Expression {
     fn evaluate_math(
         mut numbers: ArrayVec<MathToken, 6>,
         mut ops: ArrayVec<MathOperator, 6>,
-        variables: &mut [u8],
-    ) -> Result<u8, EvaluationError> {
+        variables: &mut [usize],
+    ) -> Result<usize, EvaluationError> {
         while let Some(op) = ops.pop() {
-            let (rhs, lhs) = (
+            let (lhs, rhs) = (
                 numbers.pop().ok_or(EvaluationError::Incomplete)?,
                 numbers.pop().ok_or(EvaluationError::Incomplete)?,
             );
             let rhs_num = match rhs {
                 MathToken::Literal(n) => n,
-                MathToken::Variable(idx) => variables[idx as usize],
+                MathToken::Variable(idx) => variables[idx],
             };
             let lhs_num = match lhs {
                 MathToken::Literal(n) => n,
-                MathToken::Variable(idx) => variables[idx as usize],
+                MathToken::Variable(idx) => variables[idx],
             };
             numbers.push(MathToken::Literal(match op {
                 MathOperator::Plus => lhs_num
@@ -82,6 +81,7 @@ impl Expression {
         }
         match numbers.pop() {
             Some(MathToken::Literal(res)) => Ok(res),
+            Some(MathToken::Variable(var_idx)) => Ok(variables[var_idx as usize]),
             _ => Err(EvaluationError::Incomplete),
         }
     }
@@ -91,15 +91,15 @@ impl Expression {
 pub enum BasicCommand {
     Print(Option<Expression>),
     Run,
-    Goto(Option<u8>),
+    Goto(Option<usize>),
     End,
     List,
     Clear,
-    Let(Option<u8>, Option<u8>),
+    Let(Option<usize>, Option<Expression>),
     Rem,
 }
 impl BasicCommand {
-    pub fn execute(&self, serial: &mut Serial, variables: &mut [u8]) -> BasicControlFlow {
+    pub fn execute(&self, serial: &mut Serial, variables: &mut [usize]) -> BasicControlFlow {
         match self {
             BasicCommand::Print(Some(expr)) => {
                 match expr {
@@ -128,7 +128,7 @@ impl BasicCommand {
                         .unwrap_infallible();
                     }
                 }
-                uwriteln!(serial, "").unwrap_infallible();
+                uwriteln!(serial, "\r").unwrap_infallible();
             }
             BasicCommand::Run => return BasicControlFlow::Run,
             BasicCommand::End => return BasicControlFlow::End,
@@ -137,11 +137,33 @@ impl BasicCommand {
                 return BasicControlFlow::Goto(line.unwrap())
             }
             BasicCommand::List => return BasicControlFlow::List,
-            BasicCommand::Let(Some(var_idx), Some(num)) => {
-                variables[*var_idx as usize] = *num;
+            BasicCommand::Let(Some(var_idx), Some(Expression::Math(numbers, operators))) => {
+                let result =
+                    Expression::evaluate_math(numbers.clone(), operators.clone(), variables);
+                match result {
+                    Ok(res) => variables[*var_idx as usize] = res,
+                    Err(e) => {
+                        match e {
+                            EvaluationError::Incomplete => {
+                                uwrite!(serial, "incomplete expression").unwrap_infallible()
+                            }
+                            EvaluationError::Overflow => {
+                                uwrite!(serial, "value overflowed").unwrap_infallible()
+                            }
+                            EvaluationError::Underflow => {
+                                uwrite!(serial, "value underflowed").unwrap_infallible()
+                            }
+                            EvaluationError::DivideByZero => {
+                                uwrite!(serial, "division by zero").unwrap_infallible()
+                            }
+                        };
+                        uwriteln!(serial, "\r").unwrap_infallible();
+                        return BasicControlFlow::End;
+                    }
+                };
             }
             BasicCommand::Rem => (),
-            _ => uwriteln!(serial, "UNIMPLEMENTED").unwrap_infallible(),
+            _ => uwriteln!(serial, "UNIMPLEMENTED\r").unwrap_infallible(),
         }
         BasicControlFlow::Continue
     }
@@ -152,7 +174,7 @@ pub struct BasicLine {
     pub command: BasicCommand,
 }
 impl BasicLine {
-    pub fn execute(self, serial: &mut Serial, variables: &mut [u8]) -> BasicControlFlow {
+    pub fn execute(self, serial: &mut Serial, variables: &mut [usize]) -> BasicControlFlow {
         self.command.execute(serial, variables)
     }
 
@@ -175,7 +197,7 @@ impl BasicLine {
 
             if idx == 0usize {
                 if let Token::Number(num) = token {
-                    line_num = Some(num as usize);
+                    line_num = Some(num);
                     continue;
                 }
             }
@@ -209,39 +231,41 @@ impl BasicLine {
                         }
                         _ => return Err(InterpretationError::UnimplementedToken),
                     },
-                    Token::String(str) => {
-                        if let BasicCommand::Print(expr) = command {
-                            match expr {
-                                None => {
-                                    command = BasicCommand::Print(Some(Expression::String(str)));
-                                    expected = None;
-                                }
-                                Some(Expression::Math(_, _)) => {
-                                    return Err(InterpretationError::UnexpectedArgs);
-                                }
-                                Some(Expression::String(_)) => {
-                                    unreachable!()
-                                }
-                            }
+                    Token::String(str) => match command {
+                        BasicCommand::Print(None) => {
+                            command = BasicCommand::Print(Some(Expression::String(str)));
+                            expected = None;
                         }
-                    }
+                        _ => return Err(InterpretationError::UnexpectedArgs),
+                    },
                     Token::Number(num) => match command {
                         BasicCommand::Goto(_) => {
                             command = BasicCommand::Goto(Some(num));
                             expected = None;
                         }
-                        BasicCommand::Let(Some(var), ref mut none_num) => {
-                            *none_num = Some(num);
-                            expected = None;
-                        }
+                        BasicCommand::Let(Some(_), ref mut expr) => match expr {
+                            None => {
+                                let mut numbers = ArrayVec::<MathToken, 6>::new();
+                                numbers.push(MathToken::Literal(num));
+                                *expr = Some(Expression::Math(
+                                    numbers,
+                                    ArrayVec::<MathOperator, 6>::new(),
+                                ));
+                            }
+                            Some(Expression::Math(ref mut nums, _)) => {
+                                nums.try_push(MathToken::Literal(num))
+                                    .map_err(|_| InterpretationError::StackLimitReached)?;
+                            }
+                            _ => return Err(InterpretationError::UnexpectedArgs),
+                        },
                         BasicCommand::Print(ref mut expr) => match expr {
                             None => {
                                 let mut numbers = ArrayVec::<MathToken, 6>::new();
                                 numbers.push(MathToken::Literal(num));
-                                command = BasicCommand::Print(Some(Expression::Math(
+                                *expr = Some(Expression::Math(
                                     numbers,
                                     ArrayVec::<MathOperator, 6>::new(),
-                                )));
+                                ));
                             }
                             Some(Expression::Math(ref mut nums, _)) => {
                                 nums.try_push(MathToken::Literal(num))
@@ -254,7 +278,8 @@ impl BasicLine {
                         _ => return Err(InterpretationError::UnexpectedArgs),
                     },
                     Token::Variable(var_idx) => match command {
-                        BasicCommand::Print(Some(Expression::Math(ref mut nums, _))) => {
+                        BasicCommand::Print(Some(Expression::Math(ref mut nums, _)))
+                        | BasicCommand::Let(Some(_), Some(Expression::Math(ref mut nums, _))) => {
                             nums.try_push(MathToken::Variable(var_idx))
                                 .map_err(|_| InterpretationError::StackLimitReached)?;
                         }
@@ -266,19 +291,37 @@ impl BasicLine {
                                 ArrayVec::<MathOperator, 6>::new(),
                             )));
                         }
-                        BasicCommand::Let(ref mut var, None) => {
+                        BasicCommand::Let(ref mut var, None) if var.is_none() => {
                             *var = Some(var_idx);
+                            expected = Some(ExpectedArgument::Assignment);
+                        }
+                        BasicCommand::Let(Some(_), ref mut expr) if expr.is_none() => {
+                            let mut numbers = ArrayVec::<MathToken, 6>::new();
+                            numbers.push(MathToken::Variable(var_idx));
+                            *expr = Some(Expression::Math(
+                                numbers,
+                                ArrayVec::<MathOperator, 6>::new(),
+                            ));
                         }
                         _ => return Err(InterpretationError::UnexpectedArgs),
                     },
                     Token::MathOperator(op) => match command {
-                        BasicCommand::Print(Some(Expression::Math(_, ref mut ops))) => {
+                        BasicCommand::Print(Some(Expression::Math(_, ref mut ops)))
+                        | BasicCommand::Let(Some(_), Some(Expression::Math(_, ref mut ops))) => {
                             ops.try_push(op)
                                 .map_err(|_| InterpretationError::StackLimitReached)?;
                         }
                         _ => return Err(InterpretationError::UnexpectedArgs),
                     },
-                    _ => return Err(InterpretationError::UnimplementedToken),
+                    Token::RelationOperator(op) => match op {
+                        RelationOperator::Equal => match command {
+                            BasicCommand::Let(Some(_), None) => {
+                                expected = Some(ExpectedArgument::Expression)
+                            }
+                            _ => return Err(InterpretationError::UnexpectedArgs),
+                        },
+                        _ => return Err(InterpretationError::UnexpectedArgs),
+                    },
                 }
             } else {
                 return Err(InterpretationError::UnexpectedArgs);
@@ -286,7 +329,14 @@ impl BasicLine {
         }
 
         match command {
-            BasicCommand::Print(Some(_)) | BasicCommand::Let(Some(_), Some(_)) => expected = None,
+            BasicCommand::Print(Some(ref mut expr))
+            | BasicCommand::Let(Some(_), Some(ref mut expr)) => {
+                expected = None;
+                if let Expression::Math(ref mut nums, ref mut ops) = expr {
+                    nums.reverse();
+                    ops.reverse();
+                }
+            }
             _ => (),
         }
 
@@ -380,12 +430,12 @@ impl Keyword {
 
 #[derive(Copy, Clone, Debug)]
 pub enum Token {
-    Number(u8),
+    Number(usize),
     Keyword(Keyword),
     String(ArrayString<32>),
     RelationOperator(RelationOperator),
     MathOperator(MathOperator),
-    Variable(u8),
+    Variable(usize),
 }
 pub enum ParseError {
     Malformed,
@@ -397,7 +447,7 @@ pub enum ParseError {
 impl Token {
     pub fn tokenize(str: &ArrayString<64>) -> Result<ArrayVec<Token, 8>, ParseError> {
         let mut tokens = ArrayVec::<Token, 8>::new();
-        let mut number_buffer: Option<u8> = None;
+        let mut number_buffer: Option<usize> = None;
         let mut string_buffer: Option<ArrayString<32>> = None;
         let mut keyword_buffer: Option<ArrayString<6>> = None;
         for ch in str.chars() {
@@ -424,7 +474,9 @@ impl Token {
                                                     .next()
                                                     .map_or(b'A', |ch| ch as u8);
                                                 tokens
-                                                    .try_push(Token::Variable(var_ord - b'A'))
+                                                    .try_push(Token::Variable(
+                                                        (var_ord - b'A') as usize,
+                                                    ))
                                                     .map_err(|_| ParseError::TooManyTokens)?;
                                             } else {
                                                 return Err(ParseError::Malformed);
@@ -456,7 +508,7 @@ impl Token {
                     None => string_buffer = Some(ArrayString::new()),
                 },
                 num_ch if num_ch.is_ascii_digit() => {
-                    let num = num_ch as u8 - b'0';
+                    let num = (num_ch as u8 - b'0') as usize;
                     match (number_buffer, string_buffer) {
                         (Some(number), None) => {
                             let new_number = number
@@ -514,7 +566,21 @@ impl Token {
         if let Some(keyword) = keyword_buffer {
             match Keyword::from(keyword) {
                 Err(_) => match RelationOperator::from(keyword) {
-                    Err(_) => return Err(ParseError::Malformed),
+                    Err(_) => match MathOperator::from(keyword) {
+                        Err(_) => {
+                            if keyword.len() == 1 {
+                                let var_ord = keyword.chars().next().map_or(b'A', |ch| ch as u8);
+                                tokens
+                                    .try_push(Token::Variable((var_ord - b'A') as usize))
+                                    .map_err(|_| ParseError::TooManyTokens)?;
+                            } else {
+                                return Err(ParseError::Malformed);
+                            }
+                        }
+                        Ok(op) => tokens
+                            .try_push(Token::MathOperator(op))
+                            .map_err(|_| ParseError::TooManyTokens)?,
+                    },
                     Ok(op) => tokens
                         .try_push(Token::RelationOperator(op))
                         .map_err(|_| ParseError::TooManyTokens)?,
@@ -531,13 +597,16 @@ impl Token {
         matches!(
             (self, expected),
             (Token::Keyword(_), ExpectedArgument::Keyword)
-                | (Token::String(_), ExpectedArgument::String)
                 | (Token::String(_), ExpectedArgument::Expression)
                 | (Token::Number(_), ExpectedArgument::Number)
                 | (Token::Number(_), ExpectedArgument::Expression)
                 | (Token::Variable(_), ExpectedArgument::Variable)
                 | (Token::Variable(_), ExpectedArgument::Expression)
                 | (Token::MathOperator(_), ExpectedArgument::Expression)
+                | (
+                    Token::RelationOperator(RelationOperator::Equal),
+                    ExpectedArgument::Assignment
+                )
         )
     }
 }

@@ -14,11 +14,11 @@ use panic_halt as _;
 use ufmt::{uwrite, uwriteln};
 
 const RETURN_ASCII: u8 = b'\r';
-const BACKSPACE_ASCII: u8 = b'\x7f';
-const PROGRAM_LENGTH: usize = 10;
+const BACKSPACE_ASCII: u8 = b'\x08';
+const PROGRAM_LENGTH: usize = 12;
 pub type Serial = arduino_hal::hal::usart::Usart0<arduino_hal::DefaultClock>;
 
-fn list(serial: &mut Serial, program: &[Option<BasicCommand>]) {
+fn list(serial: &mut Serial, program: &[Option<BasicCommand>], variables: &[usize]) {
     program.iter().enumerate().for_each(|(line_num, l)| {
         if let Some(line) = l {
             uwrite!(serial, "{} ", line_num).unwrap_infallible();
@@ -32,21 +32,31 @@ fn list(serial: &mut Serial, program: &[Option<BasicCommand>]) {
                     uwrite!(serial, "GOTO {}", line_num.unwrap()).unwrap_infallible()
                 }
                 BasicCommand::Print(Some(expr)) => {
-                    uwrite!(serial, "PRINT \"").unwrap_infallible();
+                    uwrite!(serial, "PRINT ").unwrap_infallible();
                     match expr {
-                        Expression::String(str) => str
-                            .chars()
-                            .for_each(|c| uwrite!(serial, "{}", c).unwrap_infallible()),
+                        Expression::String(str) => {
+                            uwrite!(serial, "\"").unwrap_infallible();
+                            str.chars()
+                                .for_each(|c| uwrite!(serial, "{}", c).unwrap_infallible());
+                            uwrite!(serial, "\"").unwrap_infallible();
+                        }
                         Expression::Math(_, _) => {
                             uwrite!(serial, "<MATH EXPRESSION>").unwrap_infallible()
                         }
                     }
-                    uwrite!(serial, "\"").unwrap_infallible();
+                }
+                BasicCommand::Let(Some(var_idx), Some(_)) => {
+                    uwrite!(
+                        serial,
+                        "LET {} = <MATH EXPRESSION>",
+                        (*var_idx as u8 + b'A') as char
+                    )
+                    .unwrap_infallible();
                 }
                 _ => uwrite!(serial, "UNIMPLEMENTED PRINT").unwrap_infallible(),
             }
 
-            uwriteln!(serial, "").unwrap_infallible();
+            uwriteln!(serial, "\r").unwrap_infallible();
         }
     });
 }
@@ -54,7 +64,7 @@ fn list(serial: &mut Serial, program: &[Option<BasicCommand>]) {
 fn main() -> ! {
     let dp = arduino_hal::Peripherals::take().unwrap();
     let pins = arduino_hal::pins!(dp);
-    let mut serial: Serial = arduino_hal::default_serial!(dp, pins, 57200);
+    let mut serial: Serial = arduino_hal::default_serial!(dp, pins, 57600);
 
     uwriteln!(&mut serial, "Starting TinyBASIC...\r").unwrap_infallible();
     uwriteln!(
@@ -63,7 +73,12 @@ fn main() -> ! {
         size_of::<[Option<BasicCommand>; PROGRAM_LENGTH]>()
     )
     .unwrap_infallible();
-    uwriteln!(&mut serial, "variables size: {}\r", size_of::<[u8; 26]>()).unwrap_infallible();
+    uwriteln!(
+        &mut serial,
+        "variables size: {}\r",
+        size_of::<[usize; 26]>()
+    )
+    .unwrap_infallible();
     uwriteln!(
         &mut serial,
         "input buffer size: {}\r",
@@ -79,7 +94,7 @@ fn main() -> ! {
     uwriteln!(
         &mut serial,
         "number buffer size: {}\r",
-        size_of::<Option<u8>>()
+        size_of::<Option<usize>>()
     )
     .unwrap_infallible();
     uwriteln!(
@@ -94,10 +109,11 @@ fn main() -> ! {
         size_of::<Option<ArrayString<6>>>()
     )
     .unwrap_infallible();
+    uwriteln!(&mut serial, "arch word size: {}\r", size_of::<usize>()).unwrap_infallible();
 
     let mut program: [Option<BasicCommand>; PROGRAM_LENGTH] = [const { None }; PROGRAM_LENGTH];
     let mut program_counter: Option<usize> = None;
-    let mut variables = [0u8; 26];
+    let mut variables = [0usize; 26];
 
     let mut input_buffer = ArrayString::<64>::new();
     uwriteln!(&mut serial, "READY\r",).unwrap_infallible();
@@ -109,17 +125,20 @@ fn main() -> ! {
             if let Some(command) = &program[counter] {
                 match command.execute(&mut serial, &mut variables) {
                     BasicControlFlow::Run => (),
-                    BasicControlFlow::Goto(line) => next_count = line as usize,
+                    BasicControlFlow::Goto(line) => next_count = line,
                     BasicControlFlow::End => next_count = PROGRAM_LENGTH,
-                    BasicControlFlow::List => list(&mut serial, &program),
-                    BasicControlFlow::Clear => program = [const { None }; PROGRAM_LENGTH],
+                    BasicControlFlow::List => list(&mut serial, &program, &variables),
+                    BasicControlFlow::Clear => {
+                        program = [const { None }; PROGRAM_LENGTH];
+                        variables = [const { 0usize }; 26];
+                    }
                     BasicControlFlow::Continue => (),
                 }
             }
 
             if next_count >= PROGRAM_LENGTH {
                 program_counter = None;
-                variables = [0u8; 26];
+                variables = [0usize; 26];
             } else {
                 _ = program_counter.insert(next_count);
             }
@@ -127,7 +146,7 @@ fn main() -> ! {
             uwrite!(&mut serial, "> ").unwrap_infallible();
             loop {
                 let char_u8 = serial.read_byte();
-                //uwrite!(&mut serial, "{}", char_u8).unwrap_infallible();
+                //uwrite!(&mut serial, "{} ", char_u8).unwrap_infallible();
                 match char_u8 {
                     RETURN_ASCII => {
                         uwriteln!(&mut serial, "\r").unwrap_infallible();
@@ -139,12 +158,12 @@ fn main() -> ! {
                                         if line.is_immeadiate() {
                                             match line.execute(&mut serial, &mut variables) {
                                                 BasicControlFlow::Run => {
-                                                    uwriteln!(&mut serial, "starting program...")
+                                                    uwriteln!(&mut serial, "starting program...\r")
                                                         .unwrap_infallible();
                                                     program_counter = Some(0);
                                                 }
                                                 BasicControlFlow::List => {
-                                                    list(&mut serial, &program);
+                                                    list(&mut serial, &program, &variables);
                                                 }
                                                 BasicControlFlow::Clear => {
                                                     program = [const { None }; PROGRAM_LENGTH];
@@ -155,22 +174,22 @@ fn main() -> ! {
                                             program[line.line_num.unwrap_or(0)] =
                                                 Some(line.command);
                                         } else {
-                                            uwriteln!(&mut serial, "line num too much")
+                                            uwriteln!(&mut serial, "line num too much\r")
                                                 .unwrap_infallible();
                                         }
                                     }
                                     Err(e) => match e {
                                         InterpretationError::NoArgs => {
-                                            uwriteln!(&mut serial, "arguments missing")
+                                            uwriteln!(&mut serial, "arguments missing\r")
                                         }
                                         InterpretationError::UnexpectedArgs => {
-                                            uwriteln!(&mut serial, "arguments unexpected")
+                                            uwriteln!(&mut serial, "arguments unexpected\r")
                                         }
                                         InterpretationError::UnimplementedToken => {
-                                            uwriteln!(&mut serial, "unimplemented token")
+                                            uwriteln!(&mut serial, "unimplemented token\r")
                                         }
                                         InterpretationError::StackLimitReached => {
-                                            uwriteln!(&mut serial, "math stack limit reached")
+                                            uwriteln!(&mut serial, "math stack limit reached\r")
                                         }
                                     }
                                     .unwrap_infallible(),
@@ -187,8 +206,12 @@ fn main() -> ! {
                                     uwriteln!(&mut serial, "str cap full\r").unwrap_infallible();
                                 }
                                 ParseError::NumberOverflow => {
-                                    uwriteln!(&mut serial, "number overflow: max is {}", u8::MAX)
-                                        .unwrap_infallible();
+                                    uwriteln!(
+                                        &mut serial,
+                                        "number overflow: max is {}\r",
+                                        usize::MAX
+                                    )
+                                    .unwrap_infallible();
                                 }
                             },
                         }
