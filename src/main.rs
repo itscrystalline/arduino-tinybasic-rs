@@ -15,7 +15,7 @@ use ufmt::{uwrite, uwriteln};
 
 const RETURN_ASCII: u8 = b'\r';
 const BACKSPACE_ASCII: u8 = b'\x08';
-const PROGRAM_LENGTH: usize = 12;
+const PROGRAM_LENGTH: usize = 8;
 pub type Serial = arduino_hal::hal::usart::Usart0<arduino_hal::DefaultClock>;
 
 fn list(serial: &mut Serial, program: &[Option<BasicCommand>], variables: &[usize]) {
@@ -40,8 +40,12 @@ fn list(serial: &mut Serial, program: &[Option<BasicCommand>], variables: &[usiz
                                 .for_each(|c| uwrite!(serial, "{}", c).unwrap_infallible());
                             uwrite!(serial, "\"").unwrap_infallible();
                         }
-                        Expression::Math(_, _) => {
+                        Expression::Math(_) => {
                             uwrite!(serial, "<MATH EXPRESSION>").unwrap_infallible()
+                        }
+                        Expression::Boolean(rel, _, _) => {
+                            uwrite!(serial, "<MATH EXPRESSION> {} <MATH EXPRESSION>", rel)
+                                .unwrap_infallible()
                         }
                     }
                 }
@@ -49,7 +53,7 @@ fn list(serial: &mut Serial, program: &[Option<BasicCommand>], variables: &[usiz
                     uwrite!(
                         serial,
                         "LET {} = <MATH EXPRESSION>",
-                        (*var_idx as u8 + b'A') as char
+                        (*var_idx + b'A') as char
                     )
                     .unwrap_infallible();
                 }
@@ -188,7 +192,7 @@ fn main() -> ! {
                                         InterpretationError::UnimplementedToken => {
                                             uwriteln!(&mut serial, "unimplemented token\r")
                                         }
-                                        InterpretationError::StackLimitReached => {
+                                        InterpretationError::StackFull => {
                                             uwriteln!(&mut serial, "math stack limit reached\r")
                                         }
                                     }

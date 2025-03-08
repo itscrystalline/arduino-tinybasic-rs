@@ -1,6 +1,6 @@
-use arduino_hal::prelude::_unwrap_infallible_UnwrapInfallible;
+use arduino_hal::prelude::*;
 use arrayvec::{ArrayString, ArrayVec};
-use ufmt::{derive::uDebug, uwrite, uwriteln};
+use ufmt::{derive::uDebug, uDisplay, uwrite, uwriteln};
 
 use crate::Serial;
 
@@ -17,7 +17,7 @@ pub enum InterpretationError {
     UnexpectedArgs,
     NoArgs,
     UnimplementedToken,
-    StackLimitReached,
+    StackFull,
 }
 
 #[derive(Clone, Copy)]
@@ -31,59 +31,80 @@ pub enum ExpectedArgument {
 }
 #[derive(Copy, Clone)]
 pub enum MathToken {
+    Operator(MathOperator),
+    Variable(u8),
     Literal(usize),
-    Variable(usize),
 }
 #[derive(Clone)]
 pub enum Expression {
     String(ArrayString<32>),
-    Math(ArrayVec<MathToken, 6>, ArrayVec<MathOperator, 6>),
+    Math(ArrayVec<MathToken, 7>),
+    Boolean(
+        RelationOperator,
+        ArrayVec<MathToken, 3>,
+        ArrayVec<MathToken, 3>,
+    ),
 }
 pub enum EvaluationError {
     Incomplete,
+    StackFull,
     Overflow,
     Underflow,
     DivideByZero,
 }
 impl Expression {
-    fn evaluate_math(
-        mut numbers: ArrayVec<MathToken, 6>,
-        mut ops: ArrayVec<MathOperator, 6>,
+    fn evaluate_math<const N: usize>(
+        mut tokens: ArrayVec<MathToken, N>,
         variables: &mut [usize],
     ) -> Result<usize, EvaluationError> {
-        while let Some(op) = ops.pop() {
-            let (lhs, rhs) = (
-                numbers.pop().ok_or(EvaluationError::Incomplete)?,
-                numbers.pop().ok_or(EvaluationError::Incomplete)?,
-            );
-            let rhs_num = match rhs {
-                MathToken::Literal(n) => n,
-                MathToken::Variable(idx) => variables[idx],
-            };
-            let lhs_num = match lhs {
-                MathToken::Literal(n) => n,
-                MathToken::Variable(idx) => variables[idx],
-            };
-            numbers.push(MathToken::Literal(match op {
-                MathOperator::Plus => lhs_num
-                    .checked_add(rhs_num)
-                    .ok_or(EvaluationError::Overflow),
-                MathOperator::Minus => lhs_num
-                    .checked_sub(rhs_num)
-                    .ok_or(EvaluationError::Underflow),
-                MathOperator::Multiply => lhs_num
-                    .checked_mul(rhs_num)
-                    .ok_or(EvaluationError::Overflow),
-                MathOperator::Divide => lhs_num
-                    .checked_div(rhs_num)
-                    .ok_or(EvaluationError::DivideByZero),
-            }?));
+        let mut stack = ArrayVec::<usize, 2>::new();
+
+        while let Some(token) = tokens.pop() {
+            match token {
+                MathToken::Operator(op) => {
+                    let (rhs, lhs) = (
+                        stack.pop().ok_or(EvaluationError::Incomplete)?,
+                        stack.pop().ok_or(EvaluationError::Incomplete)?,
+                    );
+                    stack
+                        .try_push(match op {
+                            MathOperator::Plus => {
+                                lhs.checked_add(rhs).ok_or(EvaluationError::Overflow)?
+                            }
+                            MathOperator::Minus => {
+                                lhs.checked_sub(rhs).ok_or(EvaluationError::Underflow)?
+                            }
+                            MathOperator::Multiply => {
+                                lhs.checked_mul(rhs).ok_or(EvaluationError::Overflow)?
+                            }
+                            MathOperator::Divide => {
+                                lhs.checked_div(rhs).ok_or(EvaluationError::DivideByZero)?
+                            }
+                        })
+                        .map_err(|_| EvaluationError::StackFull)?;
+                }
+                MathToken::Literal(num) => stack
+                    .try_push(num)
+                    .map_err(|_| EvaluationError::StackFull)?,
+                MathToken::Variable(var_idx) => stack
+                    .try_push(variables[var_idx as usize])
+                    .map_err(|_| EvaluationError::StackFull)?,
+            }
         }
-        match numbers.pop() {
-            Some(MathToken::Literal(res)) => Ok(res),
-            Some(MathToken::Variable(var_idx)) => Ok(variables[var_idx as usize]),
-            _ => Err(EvaluationError::Incomplete),
-        }
+
+        stack.pop().ok_or(EvaluationError::Incomplete)
+    }
+
+    fn evaluate_boolean(
+        rel: &RelationOperator,
+        left_tokens: ArrayVec<MathToken, 3>,
+        right_tokens: ArrayVec<MathToken, 3>,
+        variables: &mut [usize],
+    ) -> Result<bool, EvaluationError> {
+        let left = Self::evaluate_math(left_tokens, variables)?;
+        let right = Self::evaluate_math(right_tokens, variables)?;
+
+        Ok(rel.compare(left, right))
     }
 }
 
@@ -95,7 +116,7 @@ pub enum BasicCommand {
     End,
     List,
     Clear,
-    Let(Option<usize>, Option<Expression>),
+    Let(Option<u8>, Option<Expression>),
     Rem,
 }
 impl BasicCommand {
@@ -106,12 +127,8 @@ impl BasicCommand {
                     Expression::String(str) => str
                         .chars()
                         .for_each(|ch| uwrite!(serial, "{}", ch).unwrap_infallible()),
-                    Expression::Math(numbers, operators) => {
-                        let result = Expression::evaluate_math(
-                            numbers.clone(),
-                            operators.clone(),
-                            variables,
-                        );
+                    Expression::Math(numbers) => {
+                        let result = Expression::evaluate_math(numbers.clone(), variables);
                         match result {
                             Ok(res) => uwrite!(serial, "{}", res),
                             Err(e) => match e {
@@ -123,9 +140,37 @@ impl BasicCommand {
                                 EvaluationError::DivideByZero => {
                                     uwrite!(serial, "division by zero")
                                 }
+                                EvaluationError::StackFull => {
+                                    uwrite!(serial, "number stack full")
+                                }
                             },
                         }
                         .unwrap_infallible();
+                    }
+                    Expression::Boolean(cmp, left, right) => {
+                        let res = Expression::evaluate_boolean(
+                            cmp,
+                            left.clone(),
+                            right.clone(),
+                            variables,
+                        );
+                        match res {
+                            Ok(val) => uwrite!(serial, "{}", val).unwrap_infallible(),
+                            Err(e) => match e {
+                                EvaluationError::Incomplete => {
+                                    uwrite!(serial, "incomplete expression")
+                                }
+                                EvaluationError::Overflow => uwrite!(serial, "value overflowed"),
+                                EvaluationError::Underflow => uwrite!(serial, "value underflowed"),
+                                EvaluationError::DivideByZero => {
+                                    uwrite!(serial, "division by zero")
+                                }
+                                EvaluationError::StackFull => {
+                                    uwrite!(serial, "number stack full")
+                                }
+                            }
+                            .unwrap_infallible(),
+                        }
                     }
                 }
                 uwriteln!(serial, "\r").unwrap_infallible();
@@ -137,9 +182,8 @@ impl BasicCommand {
                 return BasicControlFlow::Goto(line.unwrap())
             }
             BasicCommand::List => return BasicControlFlow::List,
-            BasicCommand::Let(Some(var_idx), Some(Expression::Math(numbers, operators))) => {
-                let result =
-                    Expression::evaluate_math(numbers.clone(), operators.clone(), variables);
+            BasicCommand::Let(Some(var_idx), Some(Expression::Math(numbers))) => {
+                let result = Expression::evaluate_math(numbers.clone(), variables);
                 match result {
                     Ok(res) => variables[*var_idx as usize] = res,
                     Err(e) => {
@@ -155,6 +199,9 @@ impl BasicCommand {
                             }
                             EvaluationError::DivideByZero => {
                                 uwrite!(serial, "division by zero").unwrap_infallible()
+                            }
+                            EvaluationError::StackFull => {
+                                uwrite!(serial, "number stack full").unwrap_infallible()
                             }
                         };
                         uwriteln!(serial, "\r").unwrap_infallible();
@@ -188,6 +235,7 @@ impl BasicLine {
 
         let mut line_num = None;
         let mut expected = Some(ExpectedArgument::Keyword);
+        let mut operator_stack = ArrayVec::<MathOperator, 3>::new();
 
         let mut command = BasicCommand::Rem;
         for (idx, token) in tokens.into_iter().enumerate() {
@@ -245,71 +293,81 @@ impl BasicLine {
                         }
                         BasicCommand::Let(Some(_), ref mut expr) => match expr {
                             None => {
-                                let mut numbers = ArrayVec::<MathToken, 6>::new();
-                                numbers.push(MathToken::Literal(num));
-                                *expr = Some(Expression::Math(
-                                    numbers,
-                                    ArrayVec::<MathOperator, 6>::new(),
-                                ));
+                                let mut tokens = ArrayVec::<MathToken, 7>::new();
+                                tokens.push(MathToken::Literal(num));
+                                *expr = Some(Expression::Math(tokens));
                             }
-                            Some(Expression::Math(ref mut nums, _)) => {
+                            Some(Expression::Math(ref mut nums)) => {
                                 nums.try_push(MathToken::Literal(num))
-                                    .map_err(|_| InterpretationError::StackLimitReached)?;
+                                    .map_err(|_| InterpretationError::StackFull)?;
                             }
                             _ => return Err(InterpretationError::UnexpectedArgs),
                         },
                         BasicCommand::Print(ref mut expr) => match expr {
                             None => {
-                                let mut numbers = ArrayVec::<MathToken, 6>::new();
-                                numbers.push(MathToken::Literal(num));
-                                *expr = Some(Expression::Math(
-                                    numbers,
-                                    ArrayVec::<MathOperator, 6>::new(),
-                                ));
+                                let mut tokens = ArrayVec::<MathToken, 7>::new();
+                                tokens.push(MathToken::Literal(num));
+                                *expr = Some(Expression::Math(tokens));
                             }
-                            Some(Expression::Math(ref mut nums, _)) => {
+                            Some(Expression::Math(ref mut nums)) => {
                                 nums.try_push(MathToken::Literal(num))
-                                    .map_err(|_| InterpretationError::StackLimitReached)?;
+                                    .map_err(|_| InterpretationError::StackFull)?;
                             }
-                            Some(Expression::String(_)) => {
-                                return Err(InterpretationError::UnexpectedArgs)
-                            }
+                            _ => return Err(InterpretationError::UnexpectedArgs),
                         },
                         _ => return Err(InterpretationError::UnexpectedArgs),
                     },
                     Token::Variable(var_idx) => match command {
-                        BasicCommand::Print(Some(Expression::Math(ref mut nums, _)))
-                        | BasicCommand::Let(Some(_), Some(Expression::Math(ref mut nums, _))) => {
-                            nums.try_push(MathToken::Variable(var_idx))
-                                .map_err(|_| InterpretationError::StackLimitReached)?;
+                        BasicCommand::Print(Some(Expression::Math(ref mut tokens)))
+                        | BasicCommand::Let(Some(_), Some(Expression::Math(ref mut tokens))) => {
+                            tokens
+                                .try_push(MathToken::Variable(var_idx))
+                                .map_err(|_| InterpretationError::StackFull)?;
                         }
-                        BasicCommand::Print(None) => {
-                            let mut numbers = ArrayVec::<MathToken, 6>::new();
+                        BasicCommand::Print(ref mut expr) if expr.is_none() => {
+                            let mut numbers = ArrayVec::<MathToken, 7>::new();
                             numbers.push(MathToken::Variable(var_idx));
-                            command = BasicCommand::Print(Some(Expression::Math(
-                                numbers,
-                                ArrayVec::<MathOperator, 6>::new(),
-                            )));
+                            *expr = Some(Expression::Math(numbers));
                         }
                         BasicCommand::Let(ref mut var, None) if var.is_none() => {
                             *var = Some(var_idx);
                             expected = Some(ExpectedArgument::Assignment);
                         }
                         BasicCommand::Let(Some(_), ref mut expr) if expr.is_none() => {
-                            let mut numbers = ArrayVec::<MathToken, 6>::new();
+                            let mut numbers = ArrayVec::<MathToken, 7>::new();
                             numbers.push(MathToken::Variable(var_idx));
-                            *expr = Some(Expression::Math(
-                                numbers,
-                                ArrayVec::<MathOperator, 6>::new(),
-                            ));
+                            *expr = Some(Expression::Math(numbers));
                         }
                         _ => return Err(InterpretationError::UnexpectedArgs),
                     },
                     Token::MathOperator(op) => match command {
-                        BasicCommand::Print(Some(Expression::Math(_, ref mut ops)))
-                        | BasicCommand::Let(Some(_), Some(Expression::Math(_, ref mut ops))) => {
-                            ops.try_push(op)
-                                .map_err(|_| InterpretationError::StackLimitReached)?;
+                        BasicCommand::Print(Some(Expression::Math(ref mut tokens)))
+                        | BasicCommand::Let(Some(_), Some(Expression::Math(ref mut tokens))) => {
+                            match operator_stack.pop() {
+                                None => operator_stack
+                                    .try_push(op)
+                                    .map_err(|_| InterpretationError::StackFull)?,
+                                // if this operator preceedes the existing one, add it to the
+                                // operator stack after pushing the existing one back in
+                                Some(top) if op.preceedes(top) => {
+                                    operator_stack
+                                        .try_push(top)
+                                        .map_err(|_| InterpretationError::StackFull)?;
+                                    operator_stack
+                                        .try_push(op)
+                                        .map_err(|_| InterpretationError::StackFull)?;
+                                }
+                                // else, pop the one from the opstack onto the token stack and push
+                                // this operator onto the opstack
+                                Some(top) => {
+                                    tokens
+                                        .try_push(MathToken::Operator(top))
+                                        .map_err(|_| InterpretationError::StackFull)?;
+                                    operator_stack
+                                        .try_push(op)
+                                        .map_err(|_| InterpretationError::StackFull)?;
+                                }
+                            }
                         }
                         _ => return Err(InterpretationError::UnexpectedArgs),
                     },
@@ -332,9 +390,13 @@ impl BasicLine {
             BasicCommand::Print(Some(ref mut expr))
             | BasicCommand::Let(Some(_), Some(ref mut expr)) => {
                 expected = None;
-                if let Expression::Math(ref mut nums, ref mut ops) = expr {
-                    nums.reverse();
-                    ops.reverse();
+                if let Expression::Math(ref mut tokens) = expr {
+                    while let Some(op) = operator_stack.pop() {
+                        tokens
+                            .try_push(MathToken::Operator(op))
+                            .map_err(|_| InterpretationError::StackFull)?;
+                    }
+                    tokens.reverse();
                 }
             }
             _ => (),
@@ -368,6 +430,12 @@ impl MathOperator {
             _ => Err(InvalidKeywordError),
         }
     }
+    fn preceedes(self, other: Self) -> bool {
+        matches!(
+            (self, other),
+            (Self::Multiply | Self::Divide, Self::Plus | Self::Minus)
+        )
+    }
 }
 
 #[derive(Copy, Clone, Debug, uDebug)]
@@ -379,16 +447,41 @@ pub enum RelationOperator {
     LessEqual, // <=
     MoreEqual, // >=
 }
+impl uDisplay for RelationOperator {
+    fn fmt<W>(&self, f: &mut ufmt::Formatter<'_, W>) -> Result<(), W::Error>
+    where
+        W: _ufmt_uWrite + ?Sized,
+    {
+        f.write_str(match self {
+            Self::Equal => "=",
+            Self::NotEqual => "<>",
+            Self::Less => "<",
+            Self::LessEqual => "<=",
+            Self::More => ">",
+            Self::MoreEqual => ">=",
+        })
+    }
+}
 impl RelationOperator {
     fn from(buf: ArrayString<6>) -> Result<Self, InvalidKeywordError> {
         match buf.as_str() {
             "=" => Ok(RelationOperator::Equal),
             "<>" => Ok(RelationOperator::NotEqual),
             "<" => Ok(RelationOperator::Less),
-            ">" => Ok(RelationOperator::More),
             "<=" => Ok(RelationOperator::LessEqual),
+            ">" => Ok(RelationOperator::More),
             ">=" => Ok(RelationOperator::MoreEqual),
             _ => Err(InvalidKeywordError),
+        }
+    }
+    fn compare(&self, left: usize, right: usize) -> bool {
+        match self {
+            Self::Equal => left == right,
+            Self::NotEqual => left != right,
+            Self::Less => left < right,
+            Self::LessEqual => left <= right,
+            Self::More => left > right,
+            Self::MoreEqual => left >= right,
         }
     }
 }
@@ -435,7 +528,7 @@ pub enum Token {
     String(ArrayString<32>),
     RelationOperator(RelationOperator),
     MathOperator(MathOperator),
-    Variable(usize),
+    Variable(u8),
 }
 pub enum ParseError {
     Malformed,
@@ -474,9 +567,7 @@ impl Token {
                                                     .next()
                                                     .map_or(b'A', |ch| ch as u8);
                                                 tokens
-                                                    .try_push(Token::Variable(
-                                                        (var_ord - b'A') as usize,
-                                                    ))
+                                                    .try_push(Token::Variable(var_ord - b'A'))
                                                     .map_err(|_| ParseError::TooManyTokens)?;
                                             } else {
                                                 return Err(ParseError::Malformed);
@@ -571,7 +662,7 @@ impl Token {
                             if keyword.len() == 1 {
                                 let var_ord = keyword.chars().next().map_or(b'A', |ch| ch as u8);
                                 tokens
-                                    .try_push(Token::Variable((var_ord - b'A') as usize))
+                                    .try_push(Token::Variable(var_ord - b'A'))
                                     .map_err(|_| ParseError::TooManyTokens)?;
                             } else {
                                 return Err(ParseError::Malformed);
