@@ -15,7 +15,7 @@ use ufmt::{uwrite, uwriteln};
 
 const RETURN_ASCII: u8 = b'\r';
 const BACKSPACE_ASCII: u8 = b'\x7f';
-const PROGRAM_LENGTH: usize = 20;
+const PROGRAM_LENGTH: usize = 10;
 pub type Serial = arduino_hal::hal::usart::Usart0<arduino_hal::DefaultClock>;
 
 fn list(serial: &mut Serial, program: &[Option<BasicCommand>]) {
@@ -63,6 +63,7 @@ fn main() -> ! {
         size_of::<[Option<BasicCommand>; PROGRAM_LENGTH]>()
     )
     .unwrap_infallible();
+    uwriteln!(&mut serial, "variables size: {}\r", size_of::<[u8; 26]>()).unwrap_infallible();
     uwriteln!(
         &mut serial,
         "input buffer size: {}\r",
@@ -164,6 +165,12 @@ fn main() -> ! {
                                         }
                                         InterpretationError::UnexpectedArgs => {
                                             uwriteln!(&mut serial, "arguments unexpected")
+                                        }
+                                        InterpretationError::UnimplementedToken => {
+                                            uwriteln!(&mut serial, "unimplemented token")
+                                        }
+                                        InterpretationError::StackLimitReached => {
+                                            uwriteln!(&mut serial, "math stack limit reached")
                                         }
                                     }
                                     .unwrap_infallible(),
