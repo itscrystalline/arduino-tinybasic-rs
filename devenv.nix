@@ -10,7 +10,7 @@
     pkgsCross.avr.stdenv.cc.libc
     ravedude
     cargo-generate
-    simavr
+    minicom
   ];
 
   # https://devenv.sh/languages/
@@ -20,8 +20,8 @@
     components = [ "rustc" "cargo" "clippy" "rustfmt" "rust-analyzer" "rust-src" ];
   };
 
-  scripts.hello.exec = ''
-    echo hello from $GREET
+  scripts.serial.exec = ''
+    minicom -D /dev/ttyUSB0 -b 57600
   '';
 
   env.NIXPKGS_ALLOW_UNSUPPORTED_SYSTEM = 1;
