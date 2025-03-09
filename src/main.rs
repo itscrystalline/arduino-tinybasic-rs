@@ -17,7 +17,7 @@ use ufmt::{uwrite, uwriteln};
 const RETURN_ASCII: u8 = b'\r';
 const BACKSPACE_ASCII_SERIAL: u8 = b'\x08';
 const BACKSPACE_ASCII_QEMU: u8 = b'\x7f';
-const PROGRAM_LENGTH: usize = 20;
+const PROGRAM_LENGTH: usize = 16;
 pub type Serial = arduino_hal::hal::usart::Usart0<arduino_hal::DefaultClock>;
 
 #[arduino_hal::entry]
@@ -111,6 +111,7 @@ fn main() -> ! {
 
             if next_count >= PROGRAM_LENGTH {
                 program_counter = None;
+                uwriteln!(&mut serial, "\r\nREADY\r").unwrap_infallible();
             } else {
                 _ = program_counter.insert(next_count);
             }
@@ -162,6 +163,8 @@ fn main() -> ! {
                                                         &mut variables,
                                                         &mut string_table,
                                                     );
+                                                    uwriteln!(&mut serial, "\r\nOK\r")
+                                                        .unwrap_infallible();
                                                 }
                                                 _ => (),
                                             }
@@ -313,7 +316,7 @@ fn list(
                 _ => uwrite!(serial, "UNIMPLEMENTED PRINT").unwrap_infallible(),
             }
 
-            uwriteln!(serial, "\r").unwrap_infallible();
+            uwriteln!(serial, "\r\nOK\r").unwrap_infallible();
         }
     });
 }
