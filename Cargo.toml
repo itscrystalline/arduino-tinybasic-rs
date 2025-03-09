@@ -19,7 +19,7 @@ arrayvec = { version = "0.7.3", default-features = false }
 
 [dependencies.arduino-hal]
 git = "https://github.com/rahix/avr-hal"
-rev = "3c089795cadbbc7fa83f45958128689fee7ba1e4"
+# rev = "3c089795cadbbc7fa83f45958128689fee7ba1e4"
 features = ["arduino-uno"]
 
 [dependencies.avr-device]
@@ -41,6 +41,6 @@ opt-level = "s"
 [profile.release]
 panic = "abort"
 codegen-units = 1
-debug = true
+debug = false
 lto = true
 opt-level = "s"

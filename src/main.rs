@@ -20,59 +20,6 @@ const BACKSPACE_ASCII_QEMU: u8 = b'\x7f';
 const PROGRAM_LENGTH: usize = 20;
 pub type Serial = arduino_hal::hal::usart::Usart0<arduino_hal::DefaultClock>;
 
-fn list(
-    serial: &mut Serial,
-    program: &[Option<BasicCommand>],
-    variables: &[usize],
-    string_table: &[Option<String>],
-) {
-    program.iter().enumerate().for_each(|(line_num, l)| {
-        if let Some(line) = l {
-            uwrite!(serial, "{} ", line_num).unwrap_infallible();
-
-            match line {
-                BasicCommand::List => uwrite!(serial, "LIST").unwrap_infallible(),
-                BasicCommand::End => uwrite!(serial, "END").unwrap_infallible(),
-                BasicCommand::Run => uwrite!(serial, "RUN").unwrap_infallible(),
-                BasicCommand::Rem => uwrite!(serial, "REM").unwrap_infallible(),
-                BasicCommand::Goto(line_num) if line_num.is_some() => {
-                    uwrite!(serial, "GOTO {}", line_num.unwrap()).unwrap_infallible()
-                }
-                BasicCommand::Print(Some(expr)) => {
-                    uwrite!(serial, "PRINT ").unwrap_infallible();
-                    match expr {
-                        Expression::String(str) => {
-                            uwrite!(serial, "\"").unwrap_infallible();
-                            string_table[*str as usize]
-                                .unwrap()
-                                .chars()
-                                .for_each(|c| uwrite!(serial, "{}", c).unwrap_infallible());
-                            uwrite!(serial, "\"").unwrap_infallible();
-                        }
-                        Expression::Math(_) => {
-                            uwrite!(serial, "<MATH EXPRESSION>").unwrap_infallible()
-                        }
-                        Expression::Boolean(rel, _, _) => {
-                            uwrite!(serial, "<MATH EXPRESSION> {} <MATH EXPRESSION>", rel)
-                                .unwrap_infallible()
-                        }
-                    }
-                }
-                BasicCommand::Let(Some(var_idx), Some(_)) => {
-                    uwrite!(
-                        serial,
-                        "LET {} = <MATH EXPRESSION>",
-                        (*var_idx + b'A') as char
-                    )
-                    .unwrap_infallible();
-                }
-                _ => uwrite!(serial, "UNIMPLEMENTED PRINT").unwrap_infallible(),
-            }
-
-            uwriteln!(serial, "\r").unwrap_infallible();
-        }
-    });
-}
 #[arduino_hal::entry]
 fn main() -> ! {
     let dp = arduino_hal::Peripherals::take().unwrap();
@@ -135,7 +82,7 @@ fn main() -> ! {
     let mut variables = [0usize; 26];
     let mut string_table: [Option<ArrayString<16>>; 10] = [None; 10];
 
-    let mut tokens = ArrayVec::<Token, 8>::new();
+    let mut tokens = TokenBuffer::new();
     let mut number_buffer: Option<usize> = None;
     let mut string_buffer: Option<String> = None;
     let mut keyword_buffer: Option<ArrayString<6>> = None;
@@ -314,4 +261,59 @@ pub fn clear(
     program.iter_mut().for_each(|c| *c = None);
     string_table.iter_mut().for_each(|c| *c = None);
     variables.iter_mut().for_each(|c| *c = 0);
+}
+
+fn list(
+    serial: &mut Serial,
+    program: &[Option<BasicCommand>],
+    variables: &[usize],
+    string_table: &[Option<String>],
+) {
+    program.iter().enumerate().for_each(|(line_num, l)| {
+        if let Some(line) = l {
+            uwrite!(serial, "{} ", line_num).unwrap_infallible();
+
+            match line {
+                BasicCommand::List => uwrite!(serial, "LIST").unwrap_infallible(),
+                BasicCommand::End => uwrite!(serial, "END").unwrap_infallible(),
+                BasicCommand::Run => uwrite!(serial, "RUN").unwrap_infallible(),
+                BasicCommand::Rem => uwrite!(serial, "REM").unwrap_infallible(),
+                BasicCommand::Goto(line_num) if line_num.is_some() => {
+                    uwrite!(serial, "GOTO {}", line_num.unwrap()).unwrap_infallible()
+                }
+                BasicCommand::Print(Some(expr)) => {
+                    uwrite!(serial, "PRINT ").unwrap_infallible();
+                    match expr {
+                        Expression::String(str) => {
+                            uwrite!(serial, "\"").unwrap_infallible();
+                            string_table[*str as usize]
+                                .unwrap()
+                                .chars()
+                                .for_each(|c| uwrite!(serial, "{}", c).unwrap_infallible());
+                            uwrite!(serial, "\"").unwrap_infallible();
+                        }
+                        Expression::Math(_) => {
+                            uwrite!(serial, "<MATH EXPRESSION>").unwrap_infallible()
+                        }
+                        Expression::Boolean(_, Some(rel), _) => {
+                            uwrite!(serial, "<MATH EXPRESSION> {} <MATH EXPRESSION>", rel)
+                                .unwrap_infallible()
+                        }
+                        _ => uwrite!(serial, "UNIMPLEMENTED PRINT").unwrap_infallible(),
+                    }
+                }
+                BasicCommand::Let(Some(var_idx), Some(_)) => {
+                    uwrite!(
+                        serial,
+                        "LET {} = <MATH EXPRESSION>",
+                        (*var_idx + b'A') as char
+                    )
+                    .unwrap_infallible();
+                }
+                _ => uwrite!(serial, "UNIMPLEMENTED PRINT").unwrap_infallible(),
+            }
+
+            uwriteln!(serial, "\r").unwrap_infallible();
+        }
+    });
 }

@@ -25,8 +25,8 @@ pub enum InterpretationError {
 pub enum ExpectedArgument {
     Keyword,
     Expression,
+    Comparision,
     Number,
-    //String,
     Variable,
     Assignment,
 }
@@ -41,9 +41,9 @@ pub enum Expression {
     String(u8),
     Math(ArrayVec<MathToken, 5>),
     Boolean(
-        RelationOperator,
-        ArrayVec<MathToken, 3>,
-        ArrayVec<MathToken, 3>,
+        Option<ArrayVec<MathToken, 3>>,
+        Option<ComparisionOperator>,
+        Option<ArrayVec<MathToken, 3>>,
     ),
 }
 pub enum EvaluationError {
@@ -97,7 +97,7 @@ impl Expression {
     }
 
     fn evaluate_boolean(
-        rel: &RelationOperator,
+        cmp: &ComparisionOperator,
         left_tokens: ArrayVec<MathToken, 3>,
         right_tokens: ArrayVec<MathToken, 3>,
         variables: &mut [usize],
@@ -105,19 +105,20 @@ impl Expression {
         let left = Self::evaluate_math(left_tokens, variables)?;
         let right = Self::evaluate_math(right_tokens, variables)?;
 
-        Ok(rel.compare(left, right))
+        Ok(cmp.compare(left, right))
     }
 }
 
 #[derive(Clone)]
 pub enum BasicCommand {
-    Print(Option<Expression>),
-    Run,
     Goto(Option<usize>),
+    Print(Option<Expression>),
+    If(Option<Expression>, Option<usize>),
+    Let(Option<u8>, Option<Expression>),
+    Run,
     End,
     List,
     Clear,
-    Let(Option<u8>, Option<Expression>),
     Rem,
 }
 impl BasicCommand {
@@ -154,7 +155,7 @@ impl BasicCommand {
                         }
                         .unwrap_infallible();
                     }
-                    Expression::Boolean(cmp, left, right) => {
+                    Expression::Boolean(Some(left), Some(cmp), Some(right)) => {
                         let res = Expression::evaluate_boolean(
                             cmp,
                             left.clone(),
@@ -179,6 +180,7 @@ impl BasicCommand {
                             .unwrap_infallible(),
                         }
                     }
+                    _ => uwrite!(serial, "incomplete expression").unwrap_infallible(),
                 }
                 uwriteln!(serial, "\r").unwrap_infallible();
             }
@@ -300,6 +302,25 @@ impl BasicLine {
                             command = BasicCommand::Let(None, None);
                             expected = Some(ExpectedArgument::Variable);
                         }
+                        Keyword::If => {
+                            command = BasicCommand::If(None, None);
+                            expected = Some(ExpectedArgument::Expression);
+                        }
+                        Keyword::Then => {
+                            if let BasicCommand::If(
+                                Some(Expression::Boolean(Some(_), Some(_), Some(ref mut rhs))),
+                                None,
+                            ) = command
+                            {
+                                expected = Some(ExpectedArgument::Number);
+                                while let Some(op) = operator_stack.pop() {
+                                    rhs.try_push(MathToken::Operator(op))
+                                        .map_err(|_| InterpretationError::StackFull)?;
+                                }
+                            } else {
+                                return Err(InterpretationError::UnexpectedArgs);
+                            }
+                        }
                         _ => return Err(InterpretationError::UnimplementedToken),
                     },
                     Token::String(str) => match command {
@@ -315,8 +336,11 @@ impl BasicLine {
                         _ => return Err(InterpretationError::UnexpectedArgs),
                     },
                     Token::Number(num) => match command {
-                        BasicCommand::Goto(_) => {
-                            command = BasicCommand::Goto(Some(num));
+                        BasicCommand::Goto(ref mut goto_dest)
+                        | BasicCommand::If(Some(_), ref mut goto_dest)
+                            if goto_dest.is_none() =>
+                        {
+                            *goto_dest = Some(num);
                             expected = None;
                         }
                         BasicCommand::Let(Some(_), ref mut expr) => match expr {
@@ -370,7 +394,8 @@ impl BasicLine {
                     },
                     Token::MathOperator(op) => match command {
                         BasicCommand::Print(Some(Expression::Math(ref mut tokens)))
-                        | BasicCommand::Let(Some(_), Some(Expression::Math(ref mut tokens))) => {
+                        | BasicCommand::Let(Some(_), Some(Expression::Math(ref mut tokens)))
+                        | BasicCommand::If(Some(Expression::Math(ref mut tokens)), None) => {
                             match operator_stack.pop() {
                                 None => operator_stack
                                     .try_push(op)
@@ -397,17 +422,63 @@ impl BasicLine {
                                 }
                             }
                         }
-                        _ => return Err(InterpretationError::UnexpectedArgs),
-                    },
-                    Token::RelationOperator(op) => match op {
-                        RelationOperator::Equal => match command {
-                            BasicCommand::Let(Some(_), None) => {
-                                expected = Some(ExpectedArgument::Expression)
+                        BasicCommand::If(
+                            Some(
+                                Expression::Boolean(Some(ref mut tokens), None, None)
+                                | Expression::Boolean(Some(_), Some(_), Some(ref mut tokens)),
+                            ),
+                            None,
+                        ) => match operator_stack.pop() {
+                            None => operator_stack
+                                .try_push(op)
+                                .map_err(|_| InterpretationError::StackFull)?,
+                            // if this operator preceedes the existing one, add it to the
+                            // operator stack after pushing the existing one back in
+                            Some(top) if op.preceedes(top) => {
+                                operator_stack
+                                    .try_push(top)
+                                    .map_err(|_| InterpretationError::StackFull)?;
+                                operator_stack
+                                    .try_push(op)
+                                    .map_err(|_| InterpretationError::StackFull)?;
                             }
-                            _ => return Err(InterpretationError::UnexpectedArgs),
+                            // else, pop the one from the opstack onto the token stack and push
+                            // this operator onto the opstack
+                            Some(top) => {
+                                tokens
+                                    .try_push(MathToken::Operator(top))
+                                    .map_err(|_| InterpretationError::StackFull)?;
+                                operator_stack
+                                    .try_push(op)
+                                    .map_err(|_| InterpretationError::StackFull)?;
+                            }
                         },
                         _ => return Err(InterpretationError::UnexpectedArgs),
                     },
+                    Token::ComparisionOperator(op) => {
+                        if op == ComparisionOperator::Equal {
+                            if let BasicCommand::Let(Some(_), None) = command {
+                                expected = Some(ExpectedArgument::Expression);
+                                continue;
+                            }
+                        }
+
+                        if let BasicCommand::If(Some(ref mut lhs), None) = command {
+                            if let Expression::Math(lhs_tokens) = lhs {
+                                if lhs_tokens.len() <= 3 {
+                                    let new_lhs =
+                                        ArrayVec::<MathToken, 3>::from_iter(lhs_tokens.drain(0..3));
+                                    *lhs = Expression::Boolean(Some(new_lhs), Some(op), None);
+                                } else {
+                                    return Err(InterpretationError::UnexpectedArgs);
+                                }
+                            } else {
+                                return Err(InterpretationError::UnexpectedArgs);
+                            }
+                        } else {
+                            return Err(InterpretationError::UnexpectedArgs);
+                        }
+                    }
                 }
             } else {
                 return Err(InterpretationError::UnexpectedArgs);
@@ -426,6 +497,13 @@ impl BasicLine {
                     }
                     tokens.reverse();
                 }
+            }
+            BasicCommand::If(
+                Some(Expression::Boolean(Some(ref mut lhs), _, Some(ref mut rhs))),
+                _,
+            ) => {
+                lhs.reverse();
+                rhs.reverse();
             }
             _ => (),
         }
@@ -466,8 +544,8 @@ impl MathOperator {
     }
 }
 
-#[derive(Copy, Clone, Debug, uDebug)]
-pub enum RelationOperator {
+#[derive(Copy, Clone, Debug, PartialEq, uDebug)]
+pub enum ComparisionOperator {
     Equal,     // =
     NotEqual,  // <>
     Less,      // <
@@ -475,7 +553,7 @@ pub enum RelationOperator {
     LessEqual, // <=
     MoreEqual, // >=
 }
-impl uDisplay for RelationOperator {
+impl uDisplay for ComparisionOperator {
     fn fmt<W>(&self, f: &mut ufmt::Formatter<'_, W>) -> Result<(), W::Error>
     where
         W: _ufmt_uWrite + ?Sized,
@@ -490,15 +568,15 @@ impl uDisplay for RelationOperator {
         })
     }
 }
-impl RelationOperator {
+impl ComparisionOperator {
     fn from(buf: ArrayString<6>) -> Result<Self, InvalidKeywordError> {
         match buf.as_str() {
-            "=" => Ok(RelationOperator::Equal),
-            "<>" => Ok(RelationOperator::NotEqual),
-            "<" => Ok(RelationOperator::Less),
-            "<=" => Ok(RelationOperator::LessEqual),
-            ">" => Ok(RelationOperator::More),
-            ">=" => Ok(RelationOperator::MoreEqual),
+            "=" => Ok(ComparisionOperator::Equal),
+            "<>" => Ok(ComparisionOperator::NotEqual),
+            "<" => Ok(ComparisionOperator::Less),
+            "<=" => Ok(ComparisionOperator::LessEqual),
+            ">" => Ok(ComparisionOperator::More),
+            ">=" => Ok(ComparisionOperator::MoreEqual),
             _ => Err(InvalidKeywordError),
         }
     }
@@ -518,11 +596,10 @@ impl RelationOperator {
 pub enum Keyword {
     Print,
     If,
+    Then,
     Goto,
     Input,
     Let,
-    GoSub,
-    Return,
     Clear,
     List,
     Run,
@@ -535,11 +612,10 @@ impl Keyword {
         match value.as_str() {
             "PRINT" => Ok(Keyword::Print),
             "IF" => Ok(Keyword::If),
+            "THEN" => Ok(Keyword::Then),
             "GOTO" => Ok(Keyword::Goto),
             "INPUT" => Ok(Keyword::Input),
             "LET" => Ok(Keyword::Let),
-            "GOSUB" => Ok(Keyword::GoSub),
-            "RETURN" => Ok(Keyword::Return),
             "CLEAR" => Ok(Keyword::Clear),
             "LIST" => Ok(Keyword::List),
             "RUN" => Ok(Keyword::Run),
@@ -554,7 +630,7 @@ pub enum Token {
     Number(usize),
     Keyword(Keyword),
     String(String),
-    RelationOperator(RelationOperator),
+    ComparisionOperator(ComparisionOperator),
     MathOperator(MathOperator),
     Variable(u8),
 }
@@ -565,7 +641,7 @@ pub enum ParseError {
     NumberOverflow,
 }
 
-pub type TokenBuffer = ArrayVec<Token, 8>;
+pub type TokenBuffer = ArrayVec<Token, 11>;
 pub type String = ArrayString<16>;
 pub type KeywordBuffer = Option<ArrayString<6>>;
 
@@ -592,7 +668,7 @@ impl Token {
                         }
                         if let Some(keyword) = keyword_buffer {
                             match Keyword::from(*keyword) {
-                                Err(_) => match RelationOperator::from(*keyword) {
+                                Err(_) => match ComparisionOperator::from(*keyword) {
                                     Err(_) => match MathOperator::from(*keyword) {
                                         Err(_) => {
                                             if keyword.len() == 1 {
@@ -612,7 +688,7 @@ impl Token {
                                             .map_err(|_| ParseError::TooManyTokens)?,
                                     },
                                     Ok(op) => tokens
-                                        .try_push(Token::RelationOperator(op))
+                                        .try_push(Token::ComparisionOperator(op))
                                         .map_err(|_| ParseError::TooManyTokens)?,
                                 },
                                 Ok(kw) => tokens
@@ -690,7 +766,7 @@ impl Token {
         }
         if let Some(keyword) = keyword_buffer {
             match Keyword::from(*keyword) {
-                Err(_) => match RelationOperator::from(*keyword) {
+                Err(_) => match ComparisionOperator::from(*keyword) {
                     Err(_) => match MathOperator::from(*keyword) {
                         Err(_) => {
                             if keyword.len() == 1 {
@@ -707,7 +783,7 @@ impl Token {
                             .map_err(|_| ParseError::TooManyTokens)?,
                     },
                     Ok(op) => tokens
-                        .try_push(Token::RelationOperator(op))
+                        .try_push(Token::ComparisionOperator(op))
                         .map_err(|_| ParseError::TooManyTokens)?,
                 },
                 Ok(kw) => tokens
@@ -728,8 +804,9 @@ impl Token {
                 | (Token::Variable(_), ExpectedArgument::Variable)
                 | (Token::Variable(_), ExpectedArgument::Expression)
                 | (Token::MathOperator(_), ExpectedArgument::Expression)
+                | (Token::ComparisionOperator(_), ExpectedArgument::Expression)
                 | (
-                    Token::RelationOperator(RelationOperator::Equal),
+                    Token::ComparisionOperator(ComparisionOperator::Equal),
                     ExpectedArgument::Assignment
                 )
         )
