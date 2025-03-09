@@ -2,7 +2,7 @@ use arduino_hal::prelude::*;
 use arrayvec::{ArrayString, ArrayVec};
 use ufmt::{derive::uDebug, uDisplay, uwrite, uwriteln};
 
-use crate::Serial;
+use crate::{put_string_table, Serial, PROGRAM_LENGTH};
 
 #[derive(PartialEq, Eq)]
 pub enum BasicControlFlow {
@@ -18,6 +18,7 @@ pub enum InterpretationError {
     NoArgs,
     UnimplementedToken,
     StackFull,
+    StringTableFull,
 }
 
 #[derive(Clone, Copy)]
@@ -37,8 +38,8 @@ pub enum MathToken {
 }
 #[derive(Clone)]
 pub enum Expression {
-    String(ArrayString<32>),
-    Math(ArrayVec<MathToken, 7>),
+    String(u8),
+    Math(ArrayVec<MathToken, 5>),
     Boolean(
         RelationOperator,
         ArrayVec<MathToken, 3>,
@@ -120,11 +121,17 @@ pub enum BasicCommand {
     Rem,
 }
 impl BasicCommand {
-    pub fn execute(&self, serial: &mut Serial, variables: &mut [usize]) -> BasicControlFlow {
+    pub fn execute(
+        &self,
+        serial: &mut Serial,
+        variables: &mut [usize],
+        string_table: &[Option<String>],
+    ) -> BasicControlFlow {
         match self {
             BasicCommand::Print(Some(expr)) => {
                 match expr {
-                    Expression::String(str) => str
+                    Expression::String(table_idx) => string_table[*table_idx as usize]
+                        .unwrap()
                         .chars()
                         .for_each(|ch| uwrite!(serial, "{}", ch).unwrap_infallible()),
                     Expression::Math(numbers) => {
@@ -221,11 +228,20 @@ pub struct BasicLine {
     pub command: BasicCommand,
 }
 impl BasicLine {
-    pub fn execute(self, serial: &mut Serial, variables: &mut [usize]) -> BasicControlFlow {
-        self.command.execute(serial, variables)
+    pub fn execute(
+        self,
+        serial: &mut Serial,
+        variables: &mut [usize],
+        string_table: &[Option<String>],
+    ) -> BasicControlFlow {
+        self.command.execute(serial, variables, string_table)
     }
 
-    pub fn from_tokens(tokens: ArrayVec<Token, 8>) -> Result<BasicLine, InterpretationError> {
+    pub fn from_tokens(
+        tokens: &mut TokenBuffer,
+        program: &mut [Option<BasicCommand>; PROGRAM_LENGTH],
+        string_table: &mut [Option<String>],
+    ) -> Result<BasicLine, InterpretationError> {
         macro_rules! single_command {
             ($command: expr, $expected: expr, $comm: expr) => {
                 $command = $comm;
@@ -235,10 +251,12 @@ impl BasicLine {
 
         let mut line_num = None;
         let mut expected = Some(ExpectedArgument::Keyword);
-        let mut operator_stack = ArrayVec::<MathOperator, 3>::new();
+        let mut operator_stack = ArrayVec::<MathOperator, 2>::new();
+
+        let mut existing_string_idx = None;
 
         let mut command = BasicCommand::Rem;
-        for (idx, token) in tokens.into_iter().enumerate() {
+        for (idx, token) in tokens.drain(..).enumerate() {
             if expected.is_none() {
                 break;
             }
@@ -246,6 +264,11 @@ impl BasicLine {
             if idx == 0usize {
                 if let Token::Number(num) = token {
                     line_num = Some(num);
+                    if let Some(BasicCommand::Print(Some(Expression::String(existing_idx)))) =
+                        program[num]
+                    {
+                        existing_string_idx = Some(existing_idx);
+                    }
                     continue;
                 }
             }
@@ -281,7 +304,12 @@ impl BasicLine {
                     },
                     Token::String(str) => match command {
                         BasicCommand::Print(None) => {
-                            command = BasicCommand::Print(Some(Expression::String(str)));
+                            if let Some(existing_str_idx) = existing_string_idx {
+                                string_table[existing_str_idx as usize] = None;
+                            }
+                            let new_idx = put_string_table(str, string_table)
+                                .map_err(|_| InterpretationError::StringTableFull)?;
+                            command = BasicCommand::Print(Some(Expression::String(new_idx)));
                             expected = None;
                         }
                         _ => return Err(InterpretationError::UnexpectedArgs),
@@ -293,7 +321,7 @@ impl BasicLine {
                         }
                         BasicCommand::Let(Some(_), ref mut expr) => match expr {
                             None => {
-                                let mut tokens = ArrayVec::<MathToken, 7>::new();
+                                let mut tokens = ArrayVec::<MathToken, 5>::new();
                                 tokens.push(MathToken::Literal(num));
                                 *expr = Some(Expression::Math(tokens));
                             }
@@ -305,7 +333,7 @@ impl BasicLine {
                         },
                         BasicCommand::Print(ref mut expr) => match expr {
                             None => {
-                                let mut tokens = ArrayVec::<MathToken, 7>::new();
+                                let mut tokens = ArrayVec::<MathToken, 5>::new();
                                 tokens.push(MathToken::Literal(num));
                                 *expr = Some(Expression::Math(tokens));
                             }
@@ -325,7 +353,7 @@ impl BasicLine {
                                 .map_err(|_| InterpretationError::StackFull)?;
                         }
                         BasicCommand::Print(ref mut expr) if expr.is_none() => {
-                            let mut numbers = ArrayVec::<MathToken, 7>::new();
+                            let mut numbers = ArrayVec::<MathToken, 5>::new();
                             numbers.push(MathToken::Variable(var_idx));
                             *expr = Some(Expression::Math(numbers));
                         }
@@ -334,7 +362,7 @@ impl BasicLine {
                             expected = Some(ExpectedArgument::Assignment);
                         }
                         BasicCommand::Let(Some(_), ref mut expr) if expr.is_none() => {
-                            let mut numbers = ArrayVec::<MathToken, 7>::new();
+                            let mut numbers = ArrayVec::<MathToken, 5>::new();
                             numbers.push(MathToken::Variable(var_idx));
                             *expr = Some(Expression::Math(numbers));
                         }
@@ -525,7 +553,7 @@ impl Keyword {
 pub enum Token {
     Number(usize),
     Keyword(Keyword),
-    String(ArrayString<32>),
+    String(String),
     RelationOperator(RelationOperator),
     MathOperator(MathOperator),
     Variable(u8),
@@ -537,12 +565,18 @@ pub enum ParseError {
     NumberOverflow,
 }
 
+pub type TokenBuffer = ArrayVec<Token, 8>;
+pub type String = ArrayString<16>;
+pub type KeywordBuffer = Option<ArrayString<6>>;
+
 impl Token {
-    pub fn tokenize(str: &ArrayString<64>) -> Result<ArrayVec<Token, 8>, ParseError> {
-        let mut tokens = ArrayVec::<Token, 8>::new();
-        let mut number_buffer: Option<usize> = None;
-        let mut string_buffer: Option<ArrayString<32>> = None;
-        let mut keyword_buffer: Option<ArrayString<6>> = None;
+    pub fn tokenize(
+        str: &ArrayString<64>,
+        tokens: &mut TokenBuffer,
+        number_buffer: &mut Option<usize>,
+        string_buffer: &mut Option<String>,
+        keyword_buffer: &mut KeywordBuffer,
+    ) -> Result<(), ParseError> {
         for ch in str.chars() {
             match ch {
                 ' ' => {
@@ -553,13 +587,13 @@ impl Token {
                         _ = string_buffer.insert(string);
                     } else {
                         if let Some(number) = number_buffer {
-                            tokens.push(Token::Number(number));
-                            number_buffer = None;
+                            tokens.push(Token::Number(*number));
+                            *number_buffer = None;
                         }
                         if let Some(keyword) = keyword_buffer {
-                            match Keyword::from(keyword) {
-                                Err(_) => match RelationOperator::from(keyword) {
-                                    Err(_) => match MathOperator::from(keyword) {
+                            match Keyword::from(*keyword) {
+                                Err(_) => match RelationOperator::from(*keyword) {
+                                    Err(_) => match MathOperator::from(*keyword) {
                                         Err(_) => {
                                             if keyword.len() == 1 {
                                                 let var_ord = keyword
@@ -585,22 +619,22 @@ impl Token {
                                     .try_push(Token::Keyword(kw))
                                     .map_err(|_| ParseError::TooManyTokens)?,
                             }
-                            keyword_buffer = None
+                            *keyword_buffer = None
                         }
                     }
                 }
                 '"' | '\'' => match string_buffer {
                     Some(string) => {
-                        if tokens.try_push(Token::String(string)).is_err() {
+                        if tokens.try_push(Token::String(*string)).is_err() {
                             return Err(ParseError::TooManyTokens);
                         };
-                        string_buffer = None;
+                        *string_buffer = None;
                     }
-                    None => string_buffer = Some(ArrayString::new()),
+                    None => *string_buffer = Some(ArrayString::new()),
                 },
                 num_ch if num_ch.is_ascii_digit() => {
                     let num = (num_ch as u8 - b'0') as usize;
-                    match (number_buffer, string_buffer) {
+                    match (&number_buffer, &string_buffer) {
                         (Some(number), None) => {
                             let new_number = number
                                 .checked_mul(10)
@@ -615,7 +649,7 @@ impl Token {
                             }
                             _ = string_buffer.insert(str);
                         }
-                        (None, None) => number_buffer = Some(num),
+                        (None, None) => *number_buffer = Some(num),
                         _ => (),
                     }
                 }
@@ -638,26 +672,26 @@ impl Token {
                             if kw_buf.try_push(char).is_err() {
                                 return Err(ParseError::Capacity);
                             }
-                            keyword_buffer = Some(kw_buf);
+                            *keyword_buffer = Some(kw_buf);
                         }
                     },
                 },
             }
         }
         if let Some(number) = number_buffer {
-            if tokens.try_push(Token::Number(number)).is_err() {
+            if tokens.try_push(Token::Number(*number)).is_err() {
                 return Err(ParseError::Capacity);
             }
         }
         if let Some(string) = string_buffer {
-            if tokens.try_push(Token::String(string)).is_err() {
+            if tokens.try_push(Token::String(*string)).is_err() {
                 return Err(ParseError::Capacity);
             }
         }
         if let Some(keyword) = keyword_buffer {
-            match Keyword::from(keyword) {
-                Err(_) => match RelationOperator::from(keyword) {
-                    Err(_) => match MathOperator::from(keyword) {
+            match Keyword::from(*keyword) {
+                Err(_) => match RelationOperator::from(*keyword) {
+                    Err(_) => match MathOperator::from(*keyword) {
                         Err(_) => {
                             if keyword.len() == 1 {
                                 let var_ord = keyword.chars().next().map_or(b'A', |ch| ch as u8);
@@ -681,7 +715,7 @@ impl Token {
                     .map_err(|_| ParseError::TooManyTokens)?,
             }
         }
-        Ok(tokens)
+        Ok(())
     }
 
     fn is(&self, expected: ExpectedArgument) -> bool {
