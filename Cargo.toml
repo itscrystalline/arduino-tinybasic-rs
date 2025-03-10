@@ -10,6 +10,9 @@ name = "arduino"
 test = false
 bench = false
 
+[features]
+full = []
+
 [dependencies]
 panic-halt = "1.0.0"
 ufmt = "0.2.0"

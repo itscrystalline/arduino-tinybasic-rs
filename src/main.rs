@@ -6,7 +6,7 @@ mod basic;
 use core::char;
 
 use arduino_hal::prelude::*;
-use arrayvec::{ArrayString, ArrayVec};
+use arrayvec::ArrayString;
 use basic::{
     BasicCommand, BasicControlFlow, BasicLine, Expression, InterpretationError, ParseError, String,
     Token, TokenBuffer,
@@ -17,8 +17,69 @@ use ufmt::{uwrite, uwriteln};
 const RETURN_ASCII: u8 = b'\r';
 const BACKSPACE_ASCII_SERIAL: u8 = b'\x08';
 const BACKSPACE_ASCII_QEMU: u8 = b'\x7f';
-const PROGRAM_LENGTH: usize = 16;
+
+#[cfg(not(feature = "full"))]
+const PROGRAM_LENGTH: usize = 32;
+#[cfg(feature = "full")]
+const PROGRAM_LENGTH: usize = 10;
+
+#[cfg(feature = "full")]
+const ERROR_TABLE: [&str; 18] = [
+    "line num too much",
+    "arguments missing",
+    "arguments unexpected",
+    "unimplemented token",
+    "math stack limit reached",
+    "string table full",
+    "too much math in bool expr",
+    "too many tokens",
+    "malformed",
+    "str cap full",
+    "number overflow: max is ",
+    "UNIMPLEMENTED PRINT",
+    "incomplete expression",
+    "value overflowed",
+    "value underflowed",
+    "division by zero",
+    "number stack full",
+    "UNIMPLEMENTED",
+];
+
+#[cfg(not(feature = "full"))]
+const ERROR_TABLE: [&str; 18] = [
+    "E00", "E01", "E02", "E03", "E04", "E05", "E06", "E07", "E08", "E09", "E10", "E11", "E12",
+    "E13", "E14", "E15", "E16", "E18",
+];
+
 pub type Serial = arduino_hal::hal::usart::Usart0<arduino_hal::DefaultClock>;
+
+#[cfg(feature = "full")]
+fn print_sizes(serial: &mut Serial) {
+    uwriteln!(
+        serial,
+        "prog buf size: {}\r",
+        size_of::<[Option<BasicCommand>; PROGRAM_LENGTH]>()
+    )
+    .unwrap_infallible();
+    uwriteln!(serial, "vars size: {}\r", size_of::<[usize; 26]>()).unwrap_infallible();
+    uwriteln!(serial, "input buf size: {}\r", size_of::<ArrayString<64>>()).unwrap_infallible();
+    uwriteln!(serial, "token buf size: {}\r", size_of::<TokenBuffer>()).unwrap_infallible();
+    uwriteln!(serial, "num buf size: {}\r", size_of::<Option<usize>>()).unwrap_infallible();
+    uwriteln!(serial, "str buf size: {}\r", size_of::<Option<String>>()).unwrap_infallible();
+    uwriteln!(
+        serial,
+        "str table size: {}\r",
+        size_of::<[Option<String>; 10]>()
+    )
+    .unwrap_infallible();
+    uwriteln!(
+        serial,
+        "kw buffer size: {}\r",
+        size_of::<Option<ArrayString<6>>>()
+    )
+    .unwrap_infallible();
+    uwriteln!(serial, "arch word size: {} bytes\r", size_of::<usize>()).unwrap_infallible();
+}
 
 #[arduino_hal::entry]
 fn main() -> ! {
@@ -27,55 +88,9 @@ fn main() -> ! {
     let mut serial: Serial = arduino_hal::default_serial!(dp, pins, 57600);
 
     uwriteln!(&mut serial, "Starting TinyBASIC...\r").unwrap_infallible();
-    uwriteln!(
-        &mut serial,
-        "prog buf size: {}\r",
-        size_of::<[Option<BasicCommand>; PROGRAM_LENGTH]>()
-    )
-    .unwrap_infallible();
-    uwriteln!(&mut serial, "vars size: {}\r", size_of::<[usize; 26]>()).unwrap_infallible();
-    uwriteln!(
-        &mut serial,
-        "input buf size: {}\r",
-        size_of::<ArrayString<64>>()
-    )
-    .unwrap_infallible();
-    uwriteln!(
-        &mut serial,
-        "token buf size: {}\r",
-        size_of::<TokenBuffer>()
-    )
-    .unwrap_infallible();
-    uwriteln!(
-        &mut serial,
-        "num buf size: {}\r",
-        size_of::<Option<usize>>()
-    )
-    .unwrap_infallible();
-    uwriteln!(
-        &mut serial,
-        "str buf size: {}\r",
-        size_of::<Option<String>>()
-    )
-    .unwrap_infallible();
-    uwriteln!(
-        &mut serial,
-        "str table size: {}\r",
-        size_of::<[Option<String>; 10]>()
-    )
-    .unwrap_infallible();
-    uwriteln!(
-        &mut serial,
-        "kw buffer size: {}\r",
-        size_of::<Option<ArrayString<6>>>()
-    )
-    .unwrap_infallible();
-    uwriteln!(
-        &mut serial,
-        "arch word size: {} bytes\r",
-        size_of::<usize>()
-    )
-    .unwrap_infallible();
+
+    #[cfg(feature = "full")]
+    print_sizes(&mut serial);
 
     let mut program: [Option<BasicCommand>; PROGRAM_LENGTH] = [const { None }; PROGRAM_LENGTH];
     let mut program_counter: Option<usize> = None;
@@ -145,8 +160,6 @@ fn main() -> ! {
                                                 &string_table,
                                             ) {
                                                 BasicControlFlow::Run => {
-                                                    uwriteln!(&mut serial, "starting program...\r")
-                                                        .unwrap_infallible();
                                                     program_counter = Some(0);
                                                 }
                                                 BasicControlFlow::List => {
@@ -172,25 +185,28 @@ fn main() -> ! {
                                             program[line.line_num.unwrap_or(0)] =
                                                 Some(line.command);
                                         } else {
-                                            uwriteln!(&mut serial, "line num too much\r")
+                                            uwriteln!(&mut serial, "{}\r", ERROR_TABLE[0])
                                                 .unwrap_infallible();
                                         }
                                     }
                                     Err(e) => match e {
                                         InterpretationError::NoArgs => {
-                                            uwriteln!(&mut serial, "arguments missing\r")
+                                            uwriteln!(&mut serial, "{}\r", ERROR_TABLE[1])
                                         }
                                         InterpretationError::UnexpectedArgs => {
-                                            uwriteln!(&mut serial, "arguments unexpected\r")
+                                            uwriteln!(&mut serial, "{}\r", ERROR_TABLE[2])
                                         }
                                         InterpretationError::UnimplementedToken => {
-                                            uwriteln!(&mut serial, "unimplemented token\r")
+                                            uwriteln!(&mut serial, "{}\r", ERROR_TABLE[3])
                                         }
                                         InterpretationError::StackFull => {
-                                            uwriteln!(&mut serial, "math stack limit reached\r")
+                                            uwriteln!(&mut serial, "{}\r", ERROR_TABLE[4])
                                         }
                                         InterpretationError::StringTableFull => {
-                                            uwriteln!(&mut serial, "string table full\r")
+                                            uwriteln!(&mut serial, "{}\r", ERROR_TABLE[5])
+                                        }
+                                        InterpretationError::MathToBooleanFailed => {
+                                            uwriteln!(&mut serial, "{}\r", ERROR_TABLE[6])
                                         }
                                     }
                                     .unwrap_infallible(),
@@ -198,21 +214,20 @@ fn main() -> ! {
                             }
                             Err(e) => match e {
                                 ParseError::TooManyTokens => {
-                                    uwriteln!(&mut serial, "too many tokens\r").unwrap_infallible()
+                                    uwriteln!(&mut serial, "{}\r", ERROR_TABLE[7])
+                                        .unwrap_infallible()
                                 }
                                 ParseError::Malformed => {
-                                    uwriteln!(&mut serial, "malformed\r").unwrap_infallible()
+                                    uwriteln!(&mut serial, "{}\r", ERROR_TABLE[8])
+                                        .unwrap_infallible()
                                 }
                                 ParseError::Capacity => {
-                                    uwriteln!(&mut serial, "str cap full\r").unwrap_infallible();
+                                    uwriteln!(&mut serial, "{}\r", ERROR_TABLE[9])
+                                        .unwrap_infallible();
                                 }
                                 ParseError::NumberOverflow => {
-                                    uwriteln!(
-                                        &mut serial,
-                                        "number overflow: max is {}\r",
-                                        usize::MAX
-                                    )
-                                    .unwrap_infallible();
+                                    uwriteln!(&mut serial, "{}[{}]\r", ERROR_TABLE[10], usize::MAX)
+                                        .unwrap_infallible();
                                 }
                             },
                         }
@@ -295,28 +310,28 @@ fn list(
                                 .for_each(|c| uwrite!(serial, "{}", c).unwrap_infallible());
                             uwrite!(serial, "\"").unwrap_infallible();
                         }
-                        Expression::Math(_) => {
-                            uwrite!(serial, "<MATH EXPRESSION>").unwrap_infallible()
-                        }
+                        Expression::Math(_) => uwrite!(serial, "<MATHEXPR>").unwrap_infallible(),
                         Expression::Boolean(_, Some(rel), _) => {
-                            uwrite!(serial, "<MATH EXPRESSION> {} <MATH EXPRESSION>", rel)
-                                .unwrap_infallible()
+                            uwrite!(serial, "<MATHEXPR> {} <MATHEXPR>", rel).unwrap_infallible()
                         }
-                        _ => uwrite!(serial, "UNIMPLEMENTED PRINT").unwrap_infallible(),
+                        _ => uwrite!(serial, "{}", ERROR_TABLE[11]).unwrap_infallible(),
                     }
                 }
                 BasicCommand::Let(Some(var_idx), Some(_)) => {
-                    uwrite!(
-                        serial,
-                        "LET {} = <MATH EXPRESSION>",
-                        (*var_idx + b'A') as char
-                    )
-                    .unwrap_infallible();
+                    uwrite!(serial, "LET {} = <MATHEXPR>", (*var_idx + b'A') as char)
+                        .unwrap_infallible();
                 }
-                _ => uwrite!(serial, "UNIMPLEMENTED PRINT").unwrap_infallible(),
+                BasicCommand::If(
+                    Expression::Boolean(Some(lhs), Some(op), Some(rhs)),
+                    Some(goto_dest),
+                ) => {
+                    uwrite!(serial, "IF {} {} {} THEN {}", lhs, op, rhs, goto_dest)
+                        .unwrap_infallible();
+                }
+                _ => uwrite!(serial, "{}", ERROR_TABLE[11]).unwrap_infallible(),
             }
-
-            uwriteln!(serial, "\r\nOK\r").unwrap_infallible();
+            uwriteln!(serial, "\r").unwrap_infallible();
         }
     });
+    uwriteln!(serial, "\r\nOK\r").unwrap_infallible();
 }

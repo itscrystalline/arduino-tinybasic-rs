@@ -1,8 +1,10 @@
+use core::char;
+
 use arduino_hal::prelude::*;
 use arrayvec::{ArrayString, ArrayVec};
-use ufmt::{derive::uDebug, uDisplay, uwrite, uwriteln};
+use ufmt::{derive::uDebug, uDebug, uDisplay, uwrite, uwriteln};
 
-use crate::{put_string_table, Serial, PROGRAM_LENGTH};
+use crate::{put_string_table, Serial, ERROR_TABLE, PROGRAM_LENGTH};
 
 #[derive(PartialEq, Eq)]
 pub enum BasicControlFlow {
@@ -19,13 +21,14 @@ pub enum InterpretationError {
     UnimplementedToken,
     StackFull,
     StringTableFull,
+    MathToBooleanFailed,
 }
 
 #[derive(Clone, Copy)]
 pub enum ExpectedArgument {
     Keyword,
     Expression,
-    Comparision,
+    NumExpressionOrThen,
     Number,
     Variable,
     Assignment,
@@ -36,14 +39,26 @@ pub enum MathToken {
     Variable(u8),
     Literal(usize),
 }
+impl uDisplay for MathToken {
+    fn fmt<W>(&self, f: &mut ufmt::Formatter<'_, W>) -> Result<(), W::Error>
+    where
+        W: _ufmt_uWrite + ?Sized,
+    {
+        match self {
+            Self::Operator(op) => uDebug::fmt(op, f),
+            Self::Literal(num) => uDisplay::fmt(num, f),
+            Self::Variable(var_idx) => f.write_char((var_idx + b'A') as char),
+        }
+    }
+}
 #[derive(Clone)]
 pub enum Expression {
     String(u8),
     Math(ArrayVec<MathToken, 5>),
     Boolean(
-        Option<ArrayVec<MathToken, 3>>,
+        Option<MathToken>,
         Option<ComparisionOperator>,
-        Option<ArrayVec<MathToken, 3>>,
+        Option<MathToken>,
     ),
 }
 pub enum EvaluationError {
@@ -81,6 +96,10 @@ impl Expression {
                             MathOperator::Divide => {
                                 lhs.checked_div(rhs).ok_or(EvaluationError::DivideByZero)?
                             }
+                            MathOperator::Modulo => lhs % rhs,
+                            MathOperator::Power => lhs
+                                .checked_pow(rhs as u32)
+                                .ok_or(EvaluationError::Overflow)?,
                         })
                         .map_err(|_| EvaluationError::StackFull)?;
                 }
@@ -98,12 +117,12 @@ impl Expression {
 
     fn evaluate_boolean(
         cmp: &ComparisionOperator,
-        left_tokens: ArrayVec<MathToken, 3>,
-        right_tokens: ArrayVec<MathToken, 3>,
+        left_token: MathToken,
+        right_token: MathToken,
         variables: &mut [usize],
     ) -> Result<bool, EvaluationError> {
-        let left = Self::evaluate_math(left_tokens, variables)?;
-        let right = Self::evaluate_math(right_tokens, variables)?;
+        let left = Self::evaluate_math(ArrayVec::<MathToken, 1>::from([left_token]), variables)?;
+        let right = Self::evaluate_math(ArrayVec::<MathToken, 1>::from([right_token]), variables)?;
 
         Ok(cmp.compare(left, right))
     }
@@ -113,7 +132,7 @@ impl Expression {
 pub enum BasicCommand {
     Goto(Option<usize>),
     Print(Option<Expression>),
-    If(Option<Expression>, Option<usize>),
+    If(Expression, Option<usize>),
     Let(Option<u8>, Option<Expression>),
     Run,
     End,
@@ -141,46 +160,45 @@ impl BasicCommand {
                             Ok(res) => uwrite!(serial, "{}", res),
                             Err(e) => match e {
                                 EvaluationError::Incomplete => {
-                                    uwrite!(serial, "incomplete expression")
+                                    uwrite!(serial, "{}", ERROR_TABLE[12])
                                 }
-                                EvaluationError::Overflow => uwrite!(serial, "value overflowed"),
-                                EvaluationError::Underflow => uwrite!(serial, "value underflowed"),
+                                EvaluationError::Overflow => uwrite!(serial, "{}", ERROR_TABLE[13]),
+                                EvaluationError::Underflow => {
+                                    uwrite!(serial, "{}", ERROR_TABLE[14])
+                                }
                                 EvaluationError::DivideByZero => {
-                                    uwrite!(serial, "division by zero")
+                                    uwrite!(serial, "{}", ERROR_TABLE[15])
                                 }
                                 EvaluationError::StackFull => {
-                                    uwrite!(serial, "number stack full")
+                                    uwrite!(serial, "{}", ERROR_TABLE[16])
                                 }
                             },
                         }
                         .unwrap_infallible();
                     }
                     Expression::Boolean(Some(left), Some(cmp), Some(right)) => {
-                        let res = Expression::evaluate_boolean(
-                            cmp,
-                            left.clone(),
-                            right.clone(),
-                            variables,
-                        );
+                        let res = Expression::evaluate_boolean(cmp, *left, *right, variables);
                         match res {
                             Ok(val) => uwrite!(serial, "{}", val).unwrap_infallible(),
                             Err(e) => match e {
                                 EvaluationError::Incomplete => {
-                                    uwrite!(serial, "incomplete expression")
+                                    uwrite!(serial, "{}", ERROR_TABLE[12])
                                 }
-                                EvaluationError::Overflow => uwrite!(serial, "value overflowed"),
-                                EvaluationError::Underflow => uwrite!(serial, "value underflowed"),
+                                EvaluationError::Overflow => uwrite!(serial, "{}", ERROR_TABLE[13]),
+                                EvaluationError::Underflow => {
+                                    uwrite!(serial, "{}", ERROR_TABLE[14])
+                                }
                                 EvaluationError::DivideByZero => {
-                                    uwrite!(serial, "division by zero")
+                                    uwrite!(serial, "{}", ERROR_TABLE[15])
                                 }
                                 EvaluationError::StackFull => {
-                                    uwrite!(serial, "number stack full")
+                                    uwrite!(serial, "{}", ERROR_TABLE[16])
                                 }
                             }
                             .unwrap_infallible(),
                         }
                     }
-                    _ => uwrite!(serial, "incomplete expression").unwrap_infallible(),
+                    _ => uwrite!(serial, "{}", ERROR_TABLE[12]).unwrap_infallible(),
                 }
                 uwriteln!(serial, "\r").unwrap_infallible();
             }
@@ -198,19 +216,19 @@ impl BasicCommand {
                     Err(e) => {
                         match e {
                             EvaluationError::Incomplete => {
-                                uwrite!(serial, "incomplete expression").unwrap_infallible()
+                                uwrite!(serial, "{}", ERROR_TABLE[12]).unwrap_infallible()
                             }
                             EvaluationError::Overflow => {
-                                uwrite!(serial, "value overflowed").unwrap_infallible()
+                                uwrite!(serial, "{}", ERROR_TABLE[13]).unwrap_infallible()
                             }
                             EvaluationError::Underflow => {
-                                uwrite!(serial, "value underflowed").unwrap_infallible()
+                                uwrite!(serial, "{}", ERROR_TABLE[14]).unwrap_infallible()
                             }
                             EvaluationError::DivideByZero => {
-                                uwrite!(serial, "division by zero").unwrap_infallible()
+                                uwrite!(serial, "{}", ERROR_TABLE[15]).unwrap_infallible()
                             }
                             EvaluationError::StackFull => {
-                                uwrite!(serial, "number stack full").unwrap_infallible()
+                                uwrite!(serial, "{}", ERROR_TABLE[16]).unwrap_infallible()
                             }
                         };
                         uwriteln!(serial, "\r").unwrap_infallible();
@@ -218,8 +236,35 @@ impl BasicCommand {
                     }
                 };
             }
+            BasicCommand::If(
+                Expression::Boolean(Some(lhs), Some(cmp), Some(rhs)),
+                Some(goto_dest),
+            ) => {
+                let res = Expression::evaluate_boolean(cmp, *lhs, *rhs, variables);
+                match res {
+                    Ok(val) => {
+                        if val {
+                            return BasicControlFlow::Goto(*goto_dest);
+                        }
+                    }
+                    Err(e) => match e {
+                        EvaluationError::Incomplete => {
+                            uwrite!(serial, "{}", ERROR_TABLE[12])
+                        }
+                        EvaluationError::Overflow => uwrite!(serial, "{}", ERROR_TABLE[13]),
+                        EvaluationError::Underflow => uwrite!(serial, "{}", ERROR_TABLE[14]),
+                        EvaluationError::DivideByZero => {
+                            uwrite!(serial, "{}", ERROR_TABLE[15])
+                        }
+                        EvaluationError::StackFull => {
+                            uwrite!(serial, "{}", ERROR_TABLE[16])
+                        }
+                    }
+                    .unwrap_infallible(),
+                }
+            }
             BasicCommand::Rem => (),
-            _ => uwriteln!(serial, "UNIMPLEMENTED\r").unwrap_infallible(),
+            _ => uwriteln!(serial, "{}\r", ERROR_TABLE[17]).unwrap_infallible(),
         }
         BasicControlFlow::Continue
     }
@@ -303,20 +348,16 @@ impl BasicLine {
                             expected = Some(ExpectedArgument::Variable);
                         }
                         Keyword::If => {
-                            command = BasicCommand::If(None, None);
-                            expected = Some(ExpectedArgument::Expression);
+                            command = BasicCommand::If(Expression::Boolean(None, None, None), None);
+                            expected = Some(ExpectedArgument::NumExpressionOrThen);
                         }
                         Keyword::Then => {
                             if let BasicCommand::If(
-                                Some(Expression::Boolean(Some(_), Some(_), Some(ref mut rhs))),
+                                Expression::Boolean(Some(_), Some(_), Some(_)),
                                 None,
                             ) = command
                             {
                                 expected = Some(ExpectedArgument::Number);
-                                while let Some(op) = operator_stack.pop() {
-                                    rhs.try_push(MathToken::Operator(op))
-                                        .map_err(|_| InterpretationError::StackFull)?;
-                                }
                             } else {
                                 return Err(InterpretationError::UnexpectedArgs);
                             }
@@ -337,9 +378,10 @@ impl BasicLine {
                     },
                     Token::Number(num) => match command {
                         BasicCommand::Goto(ref mut goto_dest)
-                        | BasicCommand::If(Some(_), ref mut goto_dest)
-                            if goto_dest.is_none() =>
-                        {
+                        | BasicCommand::If(
+                            Expression::Boolean(Some(_), Some(_), Some(_)),
+                            ref mut goto_dest,
+                        ) if goto_dest.is_none() => {
                             *goto_dest = Some(num);
                             expected = None;
                         }
@@ -365,8 +407,18 @@ impl BasicLine {
                                 nums.try_push(MathToken::Literal(num))
                                     .map_err(|_| InterpretationError::StackFull)?;
                             }
+                            Some(Expression::Boolean(Some(_), Some(_), ref mut expr))
+                                if expr.is_none() =>
+                            {
+                                *expr = Some(MathToken::Literal(num))
+                            }
                             _ => return Err(InterpretationError::UnexpectedArgs),
                         },
+                        BasicCommand::If(
+                            Expression::Boolean(ref mut expr, None, None)
+                            | Expression::Boolean(Some(_), Some(_), ref mut expr),
+                            None,
+                        ) => *expr = Some(MathToken::Literal(num)),
                         _ => return Err(InterpretationError::UnexpectedArgs),
                     },
                     Token::Variable(var_idx) => match command {
@@ -390,12 +442,16 @@ impl BasicLine {
                             numbers.push(MathToken::Variable(var_idx));
                             *expr = Some(Expression::Math(numbers));
                         }
+                        BasicCommand::If(
+                            Expression::Boolean(ref mut expr, None, None)
+                            | Expression::Boolean(Some(_), Some(_), ref mut expr),
+                            None,
+                        ) => *expr = Some(MathToken::Variable(var_idx)),
                         _ => return Err(InterpretationError::UnexpectedArgs),
                     },
                     Token::MathOperator(op) => match command {
                         BasicCommand::Print(Some(Expression::Math(ref mut tokens)))
-                        | BasicCommand::Let(Some(_), Some(Expression::Math(ref mut tokens)))
-                        | BasicCommand::If(Some(Expression::Math(ref mut tokens)), None) => {
+                        | BasicCommand::Let(Some(_), Some(Expression::Math(ref mut tokens))) => {
                             match operator_stack.pop() {
                                 None => operator_stack
                                     .try_push(op)
@@ -422,63 +478,27 @@ impl BasicLine {
                                 }
                             }
                         }
-                        BasicCommand::If(
-                            Some(
-                                Expression::Boolean(Some(ref mut tokens), None, None)
-                                | Expression::Boolean(Some(_), Some(_), Some(ref mut tokens)),
-                            ),
-                            None,
-                        ) => match operator_stack.pop() {
-                            None => operator_stack
-                                .try_push(op)
-                                .map_err(|_| InterpretationError::StackFull)?,
-                            // if this operator preceedes the existing one, add it to the
-                            // operator stack after pushing the existing one back in
-                            Some(top) if op.preceedes(top) => {
-                                operator_stack
-                                    .try_push(top)
-                                    .map_err(|_| InterpretationError::StackFull)?;
-                                operator_stack
-                                    .try_push(op)
-                                    .map_err(|_| InterpretationError::StackFull)?;
-                            }
-                            // else, pop the one from the opstack onto the token stack and push
-                            // this operator onto the opstack
-                            Some(top) => {
-                                tokens
-                                    .try_push(MathToken::Operator(top))
-                                    .map_err(|_| InterpretationError::StackFull)?;
-                                operator_stack
-                                    .try_push(op)
-                                    .map_err(|_| InterpretationError::StackFull)?;
-                            }
-                        },
                         _ => return Err(InterpretationError::UnexpectedArgs),
                     },
-                    Token::ComparisionOperator(op) => {
-                        if op == ComparisionOperator::Equal {
-                            if let BasicCommand::Let(Some(_), None) = command {
-                                expected = Some(ExpectedArgument::Expression);
-                                continue;
-                            }
+                    Token::ComparisionOperator(op) => match command {
+                        BasicCommand::Let(Some(_), None) if op == ComparisionOperator::Equal => {
+                            expected = Some(ExpectedArgument::Expression);
+                            continue;
                         }
-
-                        if let BasicCommand::If(Some(ref mut lhs), None) = command {
-                            if let Expression::Math(lhs_tokens) = lhs {
-                                if lhs_tokens.len() <= 3 {
-                                    let new_lhs =
-                                        ArrayVec::<MathToken, 3>::from_iter(lhs_tokens.drain(0..3));
-                                    *lhs = Expression::Boolean(Some(new_lhs), Some(op), None);
+                        BasicCommand::If(Expression::Boolean(_, ref mut operator, _), None) => {
+                            *operator = Some(op);
+                        }
+                        BasicCommand::Print(Some(ref mut expr)) => {
+                            if let Expression::Math(tokens) = expr {
+                                if tokens.len() == 1 {
+                                    *expr = Expression::Boolean(Some(tokens[0]), Some(op), None);
                                 } else {
-                                    return Err(InterpretationError::UnexpectedArgs);
+                                    return Err(InterpretationError::MathToBooleanFailed);
                                 }
-                            } else {
-                                return Err(InterpretationError::UnexpectedArgs);
                             }
-                        } else {
-                            return Err(InterpretationError::UnexpectedArgs);
                         }
-                    }
+                        _ => return Err(InterpretationError::UnexpectedArgs),
+                    },
                 }
             } else {
                 return Err(InterpretationError::UnexpectedArgs);
@@ -486,8 +506,7 @@ impl BasicLine {
         }
 
         match command {
-            BasicCommand::Print(Some(ref mut expr))
-            | BasicCommand::Let(Some(_), Some(ref mut expr)) => {
+            BasicCommand::Print(Some(ref mut expr)) => {
                 expected = None;
                 if let Expression::Math(ref mut tokens) = expr {
                     while let Some(op) = operator_stack.pop() {
@@ -498,12 +517,16 @@ impl BasicLine {
                     tokens.reverse();
                 }
             }
-            BasicCommand::If(
-                Some(Expression::Boolean(Some(ref mut lhs), _, Some(ref mut rhs))),
-                _,
-            ) => {
-                lhs.reverse();
-                rhs.reverse();
+            BasicCommand::Let(Some(_), Some(ref mut expr)) => {
+                expected = None;
+                if let Expression::Math(ref mut tokens) = expr {
+                    while let Some(op) = operator_stack.pop() {
+                        tokens
+                            .try_push(MathToken::Operator(op))
+                            .map_err(|_| InterpretationError::StackFull)?;
+                    }
+                    tokens.reverse();
+                }
             }
             _ => (),
         }
@@ -525,6 +548,8 @@ pub enum MathOperator {
     Minus,
     Multiply,
     Divide,
+    Power,
+    Modulo,
 }
 impl MathOperator {
     fn from(buf: ArrayString<6>) -> Result<Self, InvalidKeywordError> {
@@ -533,6 +558,8 @@ impl MathOperator {
             "-" => Ok(MathOperator::Minus),
             "*" => Ok(MathOperator::Multiply),
             "/" => Ok(MathOperator::Divide),
+            "^" => Ok(MathOperator::Power),
+            "%" => Ok(MathOperator::Modulo),
             _ => Err(InvalidKeywordError),
         }
     }
@@ -663,7 +690,9 @@ impl Token {
                         _ = string_buffer.insert(string);
                     } else {
                         if let Some(number) = number_buffer {
-                            tokens.push(Token::Number(*number));
+                            tokens
+                                .try_push(Token::Number(*number))
+                                .map_err(|_| ParseError::TooManyTokens)?;
                             *number_buffer = None;
                         }
                         if let Some(keyword) = keyword_buffer {
@@ -798,13 +827,27 @@ impl Token {
         matches!(
             (self, expected),
             (Token::Keyword(_), ExpectedArgument::Keyword)
+                | (
+                    Token::Keyword(Keyword::Then),
+                    ExpectedArgument::NumExpressionOrThen
+                )
                 | (Token::String(_), ExpectedArgument::Expression)
                 | (Token::Number(_), ExpectedArgument::Number)
                 | (Token::Number(_), ExpectedArgument::Expression)
+                | (Token::Number(_), ExpectedArgument::NumExpressionOrThen)
                 | (Token::Variable(_), ExpectedArgument::Variable)
                 | (Token::Variable(_), ExpectedArgument::Expression)
+                | (Token::Variable(_), ExpectedArgument::NumExpressionOrThen)
                 | (Token::MathOperator(_), ExpectedArgument::Expression)
+                | (
+                    Token::MathOperator(_),
+                    ExpectedArgument::NumExpressionOrThen
+                )
                 | (Token::ComparisionOperator(_), ExpectedArgument::Expression)
+                | (
+                    Token::ComparisionOperator(_),
+                    ExpectedArgument::NumExpressionOrThen
+                )
                 | (
                     Token::ComparisionOperator(ComparisionOperator::Equal),
                     ExpectedArgument::Assignment
