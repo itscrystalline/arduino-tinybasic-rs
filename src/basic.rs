@@ -133,9 +133,9 @@ impl Expression {
 
 #[derive(Clone)]
 pub enum BasicCommand {
-    AnalogRead(Option<u8>),
-    DigitalRead(Option<u8>),
-    DigitalWrite(Option<u8>, Option<bool>),
+    AnalogRead(Option<u8>, Option<MathToken>),
+    DigitalRead(Option<u8>, Option<MathToken>),
+    DigitalWrite(Option<u8>, Option<MathToken>),
     Goto(Option<usize>),
     Print(Option<Expression>),
     If(Expression, Option<usize>),
@@ -254,56 +254,82 @@ impl BasicCommand {
                             return BasicControlFlow::Goto(*goto_dest);
                         }
                     }
+                    Err(e) => {
+                        match e {
+                            EvaluationError::Incomplete => {
+                                uwrite!(serial, "{}", ERROR_TABLE[12])
+                            }
+                            EvaluationError::Overflow => uwrite!(serial, "{}", ERROR_TABLE[13]),
+                            EvaluationError::Underflow => uwrite!(serial, "{}", ERROR_TABLE[14]),
+                            EvaluationError::DivideByZero => {
+                                uwrite!(serial, "{}", ERROR_TABLE[15])
+                            }
+                            EvaluationError::StackFull => {
+                                uwrite!(serial, "{}", ERROR_TABLE[16])
+                            }
+                        }
+                        .unwrap_infallible();
+                        uwriteln!(serial, "\r").unwrap_infallible();
+                        return BasicControlFlow::End;
+                    }
+                }
+            }
+            BasicCommand::AnalogRead(Some(pin), Some(MathToken::Variable(var_idx))) => {
+                match pins.read_analog(*pin as usize) {
+                    Ok(read) => {
+                        variables[*var_idx as usize] = read;
+                    }
                     Err(e) => match e {
-                        EvaluationError::Incomplete => {
-                            uwrite!(serial, "{}", ERROR_TABLE[12])
-                        }
-                        EvaluationError::Overflow => uwrite!(serial, "{}", ERROR_TABLE[13]),
-                        EvaluationError::Underflow => uwrite!(serial, "{}", ERROR_TABLE[14]),
-                        EvaluationError::DivideByZero => {
-                            uwrite!(serial, "{}", ERROR_TABLE[15])
-                        }
-                        EvaluationError::StackFull => {
-                            uwrite!(serial, "{}", ERROR_TABLE[16])
-                        }
+                        PinError::NotInput => uwriteln!(serial, "{}\r", ERROR_TABLE[18]),
+                        PinError::NotOutput => uwriteln!(serial, "{}\r", ERROR_TABLE[19]),
+                        PinError::NotPwm => uwriteln!(serial, "{}\r", ERROR_TABLE[20]),
+                        PinError::NonAddressable => uwriteln!(serial, "{}\r", ERROR_TABLE[21]),
+                        PinError::Reserved => uwriteln!(serial, "{}\r", ERROR_TABLE[22]),
                     }
                     .unwrap_infallible(),
                 }
             }
-            BasicCommand::AnalogRead(Some(pin)) => match pins.read_analog(*pin as usize) {
-                Ok(read) => {
-                    uwrite!(serial, "{}", read)
+            BasicCommand::DigitalRead(Some(pin), Some(MathToken::Variable(var_idx))) => {
+                match pins.read_digital(*pin as usize) {
+                    Ok(read) => {
+                        variables[*var_idx as usize] = read as usize;
+                    }
+                    Err(e) => match e {
+                        PinError::NotInput => uwriteln!(serial, "{}\r", ERROR_TABLE[18]),
+                        PinError::NotOutput => uwriteln!(serial, "{}\r", ERROR_TABLE[19]),
+                        PinError::NotPwm => uwriteln!(serial, "{}\r", ERROR_TABLE[20]),
+                        PinError::NonAddressable => uwriteln!(serial, "{}\r", ERROR_TABLE[21]),
+                        PinError::Reserved => uwriteln!(serial, "{}\r", ERROR_TABLE[22]),
+                    }
+                    .unwrap_infallible(),
                 }
-                Err(e) => match e {
-                    PinError::NotInput => uwrite!(serial, "{}", ERROR_TABLE[18]),
-                    PinError::NotOutput => uwrite!(serial, "{}", ERROR_TABLE[19]),
-                    PinError::NotPwm => uwrite!(serial, "{}", ERROR_TABLE[20]),
-                    PinError::NonAddressable => uwrite!(serial, "{}", ERROR_TABLE[21]),
-                    PinError::Reserved => uwrite!(serial, "{}", ERROR_TABLE[22]),
-                },
             }
-            .unwrap_infallible(),
-            BasicCommand::DigitalRead(Some(pin)) => match pins.read_digital(*pin as usize) {
-                Ok(read) => {
-                    uwrite!(serial, "{}", read)
-                }
-                Err(e) => match e {
-                    PinError::NotInput => uwrite!(serial, "{}", ERROR_TABLE[18]),
-                    PinError::NotOutput => uwrite!(serial, "{}", ERROR_TABLE[19]),
-                    PinError::NotPwm => uwrite!(serial, "{}", ERROR_TABLE[20]),
-                    PinError::NonAddressable => uwrite!(serial, "{}", ERROR_TABLE[21]),
-                    PinError::Reserved => uwrite!(serial, "{}", ERROR_TABLE[22]),
-                },
-            }
-            .unwrap_infallible(),
             BasicCommand::DigitalWrite(Some(pin), Some(value)) => {
-                if let Err(e) = pins.write_digital(*pin as usize, *value) {
+                let bool_val = {
+                    let val = match *value {
+                        MathToken::Variable(idx) => variables[idx as usize],
+                        MathToken::Literal(num) => num,
+                        _ => {
+                            uwriteln!(serial, "{}\r", ERROR_TABLE[12]).unwrap_infallible();
+                            return BasicControlFlow::End;
+                        }
+                    };
+                    match val {
+                        0 => false,
+                        1 => true,
+                        _ => {
+                            uwriteln!(serial, "{}\r", ERROR_TABLE[23]).unwrap_infallible();
+                            return BasicControlFlow::End;
+                        }
+                    }
+                };
+                if let Err(e) = pins.write_digital(*pin as usize, bool_val) {
                     match e {
-                        PinError::NotInput => uwrite!(serial, "{}", ERROR_TABLE[18]),
-                        PinError::NotOutput => uwrite!(serial, "{}", ERROR_TABLE[19]),
-                        PinError::NotPwm => uwrite!(serial, "{}", ERROR_TABLE[20]),
-                        PinError::NonAddressable => uwrite!(serial, "{}", ERROR_TABLE[21]),
-                        PinError::Reserved => uwrite!(serial, "{}", ERROR_TABLE[22]),
+                        PinError::NotInput => uwriteln!(serial, "{}\r", ERROR_TABLE[18]),
+                        PinError::NotOutput => uwriteln!(serial, "{}\r", ERROR_TABLE[19]),
+                        PinError::NotPwm => uwriteln!(serial, "{}\r", ERROR_TABLE[20]),
+                        PinError::NonAddressable => uwriteln!(serial, "{}\r", ERROR_TABLE[21]),
+                        PinError::Reserved => uwriteln!(serial, "{}\r", ERROR_TABLE[22]),
                     }
                     .unwrap_infallible();
                 }
@@ -411,9 +437,9 @@ impl BasicLine {
                         Keyword::DigitalRead | Keyword::AnalogRead | Keyword::DigitalWrite => {
                             expected = Some(ExpectedArgument::Number);
                             command = match kw {
-                                Keyword::DigitalRead => BasicCommand::DigitalRead(None),
+                                Keyword::DigitalRead => BasicCommand::DigitalRead(None, None),
                                 Keyword::DigitalWrite => BasicCommand::DigitalWrite(None, None),
-                                Keyword::AnalogRead => BasicCommand::AnalogRead(None),
+                                Keyword::AnalogRead => BasicCommand::AnalogRead(None, None),
                                 _ => unreachable!(),
                             };
                         }
@@ -474,8 +500,8 @@ impl BasicLine {
                             | Expression::Boolean(Some(_), Some(_), ref mut expr),
                             None,
                         ) => *expr = Some(MathToken::Literal(num)),
-                        BasicCommand::AnalogRead(ref mut pin)
-                        | BasicCommand::DigitalRead(ref mut pin)
+                        BasicCommand::AnalogRead(ref mut pin, None)
+                        | BasicCommand::DigitalRead(ref mut pin, None)
                         | BasicCommand::DigitalWrite(ref mut pin, None)
                             if pin.is_none() =>
                         {
@@ -483,20 +509,10 @@ impl BasicLine {
                                 num.try_into()
                                     .map_err(|_| InterpretationError::UnexpectedArgs)?,
                             );
-                            match command {
-                                BasicCommand::AnalogRead(_) | BasicCommand::DigitalRead(_) => {
-                                    expected = None;
-                                }
-                                BasicCommand::DigitalWrite(_, _) => (),
-                                _ => unreachable!(),
-                            }
+                            expected = Some(ExpectedArgument::Expression);
                         }
                         BasicCommand::DigitalWrite(Some(_), ref mut val) if val.is_none() => {
-                            *val = Some(match num {
-                                0 => false,
-                                1 => true,
-                                _ => return Err(InterpretationError::UnexpectedArgs),
-                            });
+                            *val = Some(MathToken::Literal(num));
                             expected = None;
                         }
                         _ => return Err(InterpretationError::UnexpectedArgs),
@@ -527,6 +543,14 @@ impl BasicLine {
                             | Expression::Boolean(Some(_), Some(_), ref mut expr),
                             None,
                         ) => *expr = Some(MathToken::Variable(var_idx)),
+                        BasicCommand::DigitalWrite(Some(_), ref mut val)
+                        | BasicCommand::DigitalRead(Some(_), ref mut val)
+                        | BasicCommand::AnalogRead(Some(_), ref mut val)
+                            if val.is_none() =>
+                        {
+                            *val = Some(MathToken::Variable(var_idx));
+                            expected = None;
+                        }
                         _ => return Err(InterpretationError::UnexpectedArgs),
                     },
                     Token::MathOperator(op) => match command {
@@ -647,6 +671,8 @@ impl MathOperator {
         matches!(
             (self, other),
             (Self::Multiply | Self::Divide, Self::Plus | Self::Minus)
+                | (Self::Power, Self::Plus | Self::Minus)
+                | (Self::Power, Self::Multiply | Self::Divide)
         )
     }
 }

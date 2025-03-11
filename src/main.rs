@@ -26,7 +26,7 @@ const PROGRAM_LENGTH: usize = 32;
 const PROGRAM_LENGTH: usize = 10;
 
 #[cfg(feature = "full")]
-const ERROR_TABLE: [&str; 23] = [
+const ERROR_TABLE: [&str; 24] = [
     "line num too much",
     "arguments missing",
     "arguments unexpected",
@@ -50,12 +50,13 @@ const ERROR_TABLE: [&str; 23] = [
     "pin is not pwm",
     "pin is not usable",
     "pin is reserved",
+    "not 0 or 1",
 ];
 
 #[cfg(not(feature = "full"))]
-const ERROR_TABLE: [&str; 23] = [
+const ERROR_TABLE: [&str; 24] = [
     "E00", "E01", "E02", "E03", "E04", "E05", "E06", "E07", "E08", "E09", "E10", "E11", "E12",
-    "E13", "E14", "E15", "E16", "E17", "E18", "E19", "E20", "E21", "E22",
+    "E13", "E14", "E15", "E16", "E17", "E18", "E19", "E20", "E21", "E22", "E23",
 ];
 
 #[cfg(feature = "full")]
