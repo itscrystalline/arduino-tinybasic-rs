@@ -4,7 +4,10 @@ use arduino_hal::prelude::*;
 use arrayvec::{ArrayString, ArrayVec};
 use ufmt::{derive::uDebug, uDebug, uDisplay, uwrite, uwriteln};
 
-use crate::{put_string_table, Serial, ERROR_TABLE, PROGRAM_LENGTH};
+use crate::{
+    arduino::{PinError, Pins},
+    put_string_table, Serial, ERROR_TABLE, PROGRAM_LENGTH,
+};
 
 #[derive(PartialEq, Eq)]
 pub enum BasicControlFlow {
@@ -130,6 +133,9 @@ impl Expression {
 
 #[derive(Clone)]
 pub enum BasicCommand {
+    AnalogRead(Option<u8>),
+    DigitalRead(Option<u8>),
+    DigitalWrite(Option<u8>, Option<bool>),
     Goto(Option<usize>),
     Print(Option<Expression>),
     If(Expression, Option<usize>),
@@ -144,6 +150,7 @@ impl BasicCommand {
     pub fn execute(
         &self,
         serial: &mut Serial,
+        pins: &mut Pins,
         variables: &mut [usize],
         string_table: &[Option<String>],
     ) -> BasicControlFlow {
@@ -263,6 +270,44 @@ impl BasicCommand {
                     .unwrap_infallible(),
                 }
             }
+            BasicCommand::AnalogRead(Some(pin)) => match pins.read_analog(*pin as usize) {
+                Ok(read) => {
+                    uwrite!(serial, "{}", read)
+                }
+                Err(e) => match e {
+                    PinError::NotInput => uwrite!(serial, "{}", ERROR_TABLE[18]),
+                    PinError::NotOutput => uwrite!(serial, "{}", ERROR_TABLE[19]),
+                    PinError::NotPwm => uwrite!(serial, "{}", ERROR_TABLE[20]),
+                    PinError::NonAddressable => uwrite!(serial, "{}", ERROR_TABLE[21]),
+                    PinError::Reserved => uwrite!(serial, "{}", ERROR_TABLE[22]),
+                },
+            }
+            .unwrap_infallible(),
+            BasicCommand::DigitalRead(Some(pin)) => match pins.read_digital(*pin as usize) {
+                Ok(read) => {
+                    uwrite!(serial, "{}", read)
+                }
+                Err(e) => match e {
+                    PinError::NotInput => uwrite!(serial, "{}", ERROR_TABLE[18]),
+                    PinError::NotOutput => uwrite!(serial, "{}", ERROR_TABLE[19]),
+                    PinError::NotPwm => uwrite!(serial, "{}", ERROR_TABLE[20]),
+                    PinError::NonAddressable => uwrite!(serial, "{}", ERROR_TABLE[21]),
+                    PinError::Reserved => uwrite!(serial, "{}", ERROR_TABLE[22]),
+                },
+            }
+            .unwrap_infallible(),
+            BasicCommand::DigitalWrite(Some(pin), Some(value)) => {
+                if let Err(e) = pins.write_digital(*pin as usize, *value) {
+                    match e {
+                        PinError::NotInput => uwrite!(serial, "{}", ERROR_TABLE[18]),
+                        PinError::NotOutput => uwrite!(serial, "{}", ERROR_TABLE[19]),
+                        PinError::NotPwm => uwrite!(serial, "{}", ERROR_TABLE[20]),
+                        PinError::NonAddressable => uwrite!(serial, "{}", ERROR_TABLE[21]),
+                        PinError::Reserved => uwrite!(serial, "{}", ERROR_TABLE[22]),
+                    }
+                    .unwrap_infallible();
+                }
+            }
             BasicCommand::Rem => (),
             _ => uwriteln!(serial, "{}\r", ERROR_TABLE[17]).unwrap_infallible(),
         }
@@ -278,10 +323,11 @@ impl BasicLine {
     pub fn execute(
         self,
         serial: &mut Serial,
+        pins: &mut Pins,
         variables: &mut [usize],
         string_table: &[Option<String>],
     ) -> BasicControlFlow {
-        self.command.execute(serial, variables, string_table)
+        self.command.execute(serial, pins, variables, string_table)
     }
 
     pub fn from_tokens(
@@ -362,6 +408,15 @@ impl BasicLine {
                                 return Err(InterpretationError::UnexpectedArgs);
                             }
                         }
+                        Keyword::DigitalRead | Keyword::AnalogRead | Keyword::DigitalWrite => {
+                            expected = Some(ExpectedArgument::Number);
+                            command = match kw {
+                                Keyword::DigitalRead => BasicCommand::DigitalRead(None),
+                                Keyword::DigitalWrite => BasicCommand::DigitalWrite(None, None),
+                                Keyword::AnalogRead => BasicCommand::AnalogRead(None),
+                                _ => unreachable!(),
+                            };
+                        }
                         _ => return Err(InterpretationError::UnimplementedToken),
                     },
                     Token::String(str) => match command {
@@ -419,6 +474,31 @@ impl BasicLine {
                             | Expression::Boolean(Some(_), Some(_), ref mut expr),
                             None,
                         ) => *expr = Some(MathToken::Literal(num)),
+                        BasicCommand::AnalogRead(ref mut pin)
+                        | BasicCommand::DigitalRead(ref mut pin)
+                        | BasicCommand::DigitalWrite(ref mut pin, None)
+                            if pin.is_none() =>
+                        {
+                            *pin = Some(
+                                num.try_into()
+                                    .map_err(|_| InterpretationError::UnexpectedArgs)?,
+                            );
+                            match command {
+                                BasicCommand::AnalogRead(_) | BasicCommand::DigitalRead(_) => {
+                                    expected = None;
+                                }
+                                BasicCommand::DigitalWrite(_, _) => (),
+                                _ => unreachable!(),
+                            }
+                        }
+                        BasicCommand::DigitalWrite(Some(_), ref mut val) if val.is_none() => {
+                            *val = Some(match num {
+                                0 => false,
+                                1 => true,
+                                _ => return Err(InterpretationError::UnexpectedArgs),
+                            });
+                            expected = None;
+                        }
                         _ => return Err(InterpretationError::UnexpectedArgs),
                     },
                     Token::Variable(var_idx) => match command {
@@ -631,6 +711,10 @@ pub enum Keyword {
     List,
     Run,
     End,
+
+    AnalogRead,
+    DigitalRead,
+    DigitalWrite,
 }
 struct InvalidKeywordError;
 
@@ -647,6 +731,11 @@ impl Keyword {
             "LIST" => Ok(Keyword::List),
             "RUN" => Ok(Keyword::Run),
             "END" => Ok(Keyword::End),
+
+            "AREAD" => Ok(Keyword::AnalogRead),
+            "DREAD" => Ok(Keyword::DigitalRead),
+            "DWRITE" => Ok(Keyword::DigitalWrite),
+
             _ => Err(InvalidKeywordError),
         }
     }
@@ -674,7 +763,7 @@ pub type KeywordBuffer = Option<ArrayString<6>>;
 
 impl Token {
     pub fn tokenize(
-        str: &ArrayString<64>,
+        str: &ArrayString<32>,
         tokens: &mut TokenBuffer,
         number_buffer: &mut Option<usize>,
         string_buffer: &mut Option<String>,

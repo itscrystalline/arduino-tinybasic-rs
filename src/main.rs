@@ -1,10 +1,12 @@
 #![no_std]
 #![no_main]
 
+mod arduino;
 mod basic;
 
 use core::char;
 
+use arduino::Serial;
 use arduino_hal::prelude::*;
 use arrayvec::ArrayString;
 use basic::{
@@ -24,7 +26,7 @@ const PROGRAM_LENGTH: usize = 32;
 const PROGRAM_LENGTH: usize = 10;
 
 #[cfg(feature = "full")]
-const ERROR_TABLE: [&str; 18] = [
+const ERROR_TABLE: [&str; 23] = [
     "line num too much",
     "arguments missing",
     "arguments unexpected",
@@ -43,15 +45,18 @@ const ERROR_TABLE: [&str; 18] = [
     "division by zero",
     "number stack full",
     "UNIMPLEMENTED",
+    "pin is not input",
+    "pin is not output",
+    "pin is not pwm",
+    "pin is not usable",
+    "pin is reserved",
 ];
 
 #[cfg(not(feature = "full"))]
-const ERROR_TABLE: [&str; 18] = [
+const ERROR_TABLE: [&str; 23] = [
     "E00", "E01", "E02", "E03", "E04", "E05", "E06", "E07", "E08", "E09", "E10", "E11", "E12",
-    "E13", "E14", "E15", "E16", "E18",
+    "E13", "E14", "E15", "E16", "E17", "E18", "E19", "E20", "E21", "E22",
 ];
-
-pub type Serial = arduino_hal::hal::usart::Usart0<arduino_hal::DefaultClock>;
 
 #[cfg(feature = "full")]
 fn print_sizes(serial: &mut Serial) {
@@ -62,7 +67,7 @@ fn print_sizes(serial: &mut Serial) {
     )
     .unwrap_infallible();
     uwriteln!(serial, "vars size: {}\r", size_of::<[usize; 26]>()).unwrap_infallible();
-    uwriteln!(serial, "input buf size: {}\r", size_of::<ArrayString<64>>()).unwrap_infallible();
+    uwriteln!(serial, "input buf size: {}\r", size_of::<ArrayString<32>>()).unwrap_infallible();
     uwriteln!(serial, "token buf size: {}\r", size_of::<TokenBuffer>()).unwrap_infallible();
     uwriteln!(serial, "num buf size: {}\r", size_of::<Option<usize>>()).unwrap_infallible();
     uwriteln!(serial, "str buf size: {}\r", size_of::<Option<String>>()).unwrap_infallible();
@@ -83,9 +88,7 @@ fn print_sizes(serial: &mut Serial) {
 
 #[arduino_hal::entry]
 fn main() -> ! {
-    let dp = arduino_hal::Peripherals::take().unwrap();
-    let pins = arduino_hal::pins!(dp);
-    let mut serial: Serial = arduino_hal::default_serial!(dp, pins, 57600);
+    let (mut pins, mut serial) = arduino::init();
 
     uwriteln!(&mut serial, "Starting TinyBASIC...\r").unwrap_infallible();
 
@@ -102,7 +105,7 @@ fn main() -> ! {
     let mut string_buffer: Option<String> = None;
     let mut keyword_buffer: Option<ArrayString<6>> = None;
 
-    let mut input_buffer = ArrayString::<64>::new();
+    let mut input_buffer = ArrayString::<32>::new();
     uwriteln!(&mut serial, "READY\r",).unwrap_infallible();
 
     loop {
@@ -110,7 +113,7 @@ fn main() -> ! {
             let mut next_count = counter + 1;
 
             if let Some(command) = &program[counter] {
-                match command.execute(&mut serial, &mut variables, &string_table) {
+                match command.execute(&mut serial, &mut pins, &mut variables, &string_table) {
                     BasicControlFlow::Run => (),
                     BasicControlFlow::Goto(line) => next_count = line,
                     BasicControlFlow::End => next_count = PROGRAM_LENGTH,
@@ -156,6 +159,7 @@ fn main() -> ! {
                                         if line.is_immeadiate() {
                                             match line.execute(
                                                 &mut serial,
+                                                &mut pins,
                                                 &mut variables,
                                                 &string_table,
                                             ) {
