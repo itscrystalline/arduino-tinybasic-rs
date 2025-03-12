@@ -10,8 +10,9 @@ use arduino::Serial;
 use arduino_hal::prelude::*;
 use arrayvec::ArrayString;
 use basic::{
-    BasicCommand, BasicControlFlow, BasicLine, Expression, InterpretationError, ParseError, String,
-    Token, TokenBuffer,
+    expression::Expression,
+    interpreter::{BasicCommand, BasicControlFlow, BasicLine, InterpretationError},
+    lexer::{ParseError, String, Token, TokenBuffer},
 };
 use panic_halt as _;
 use ufmt::{uwrite, uwriteln};
