@@ -2,8 +2,6 @@ use core::char;
 
 use arduino_hal::prelude::*;
 use arrayvec::ArrayVec;
-use bincode::{Decode, Encode};
-use serde::{Deserialize, Serialize};
 use ufmt::{uDebug, uDisplay, uwrite, uwriteln};
 
 use crate::{
@@ -39,7 +37,7 @@ pub enum InterpretationError {
     MathToBooleanFailed,
 }
 
-#[derive(Copy, Clone, Serialize, Deserialize)]
+#[derive(Copy, Clone)]
 pub enum MathToken {
     Operator(MathOperator),
     Variable(u8),
@@ -58,11 +56,12 @@ impl uDisplay for MathToken {
     }
 }
 
-#[derive(Clone, Encode, Decode)]
+#[repr(C)]
+#[derive(Clone)]
 pub enum BasicCommand {
-    AnalogRead(Option<u8>, #[bincode(with_serde)] Option<MathToken>),
-    DigitalRead(Option<u8>, #[bincode(with_serde)] Option<MathToken>),
-    DigitalWrite(Option<u8>, #[bincode(with_serde)] Option<MathToken>),
+    AnalogRead(Option<u8>, Option<MathToken>),
+    DigitalRead(Option<u8>, Option<MathToken>),
+    DigitalWrite(Option<u8>, Option<MathToken>),
     Goto(Option<usize>),
     Print(Option<Expression>),
     If(Expression, Option<usize>),

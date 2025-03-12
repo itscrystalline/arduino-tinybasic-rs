@@ -21,7 +21,7 @@
   };
 
   scripts.serial.exec = ''
-    minicom -D /dev/ttyUSB0 -b 57600
+    minicom -D /dev/ttyUSB0 -b 57600 -w
   '';
 
   env.NIXPKGS_ALLOW_UNSUPPORTED_SYSTEM = 1;

@@ -1,14 +1,17 @@
+use crate::{
+    basic::{interpreter::BasicCommand, lexer::String},
+    BasicProgram, PROGRAM_LENGTH,
+};
 use arduino_hal::{
-    eeprom::OutOfBoundsError,
     port::{
         mode::{self, Floating},
         Pin,
     },
+    prelude::*,
     Eeprom,
 };
-use serde::Serialize;
-
-use crate::{basic::interpreter::BasicCommand, BasicProgram, PROGRAM_LENGTH};
+use avr_progmem::progmem_display as D;
+use ufmt::{uwrite, uwriteln};
 
 pub type Serial = arduino_hal::hal::usart::Usart0<arduino_hal::DefaultClock>;
 
@@ -183,24 +186,92 @@ pub enum EepromError {
     LoadDecode,
 }
 
-pub fn eeprom_save(eeprom: &mut Eeprom, program: &BasicProgram) -> Result<usize, EepromError> {
-    let config = bincode::config::standard();
-    let mut buf = [0u8; 1024];
-    let saved = bincode::encode_into_slice(program, &mut buf, config)
-        .map_err(|_| EepromError::SaveEncode)?;
+pub fn eeprom_save(
+    serial: &mut Serial,
+    eeprom: &mut Eeprom,
+    program: &BasicProgram,
+    string_table: &[Option<String>; 8],
+) -> Result<(), EepromError> {
+    let mut offset = 0u16;
 
-    eeprom.write(0, &buf).map_err(|_| EepromError::SaveStore)?;
-    Ok(saved)
+    // SAFETY
+    // lily (my blahaj) has looked at this code VERY hard and she says its ok :3
+    // guarenteed by lily herself :3c
+    let mut command_buf: [u8; size_of::<Option<BasicCommand>>()];
+    for command in program {
+        command_buf = unsafe {
+            core::mem::transmute_copy::<Option<BasicCommand>, [u8; size_of::<Option<BasicCommand>>()]>(
+                command,
+            )
+        };
+        command_buf.into_iter().for_each(|j| {
+            eeprom.write_byte(offset, j);
+            uwrite!(serial, "{}", D!(".")).unwrap_infallible();
+            offset += 1;
+        });
+    }
+    uwrite!(serial, "{}", D!(" | ")).unwrap_infallible();
+
+    let mut string_buf: [u8; size_of::<Option<String>>()];
+    for string in string_table {
+        string_buf = unsafe {
+            core::mem::transmute_copy::<Option<String>, [u8; size_of::<Option<String>>()]>(string)
+        };
+        string_buf.into_iter().for_each(|j| {
+            eeprom.write_byte(offset, j);
+            uwrite!(serial, "{}", D!(".")).unwrap_infallible();
+            offset += 1;
+        });
+    }
+    uwriteln!(serial, "{}", D!("done.\r\n\r")).unwrap_infallible();
+
+    Ok(())
 }
 
-pub fn eeprom_load(eeprom: &Eeprom, program: &mut BasicProgram) -> Result<usize, EepromError> {
-    let config = bincode::config::standard();
-    let mut buf = [0u8; 1024];
-    eeprom.read(0, &mut buf).map_err(|_| EepromError::Load)?;
+pub fn eeprom_load(
+    serial: &mut Serial,
+    eeprom: &Eeprom,
+    program: &mut BasicProgram,
+    string_table: &mut [Option<String>; 8],
+) -> Result<(), EepromError> {
+    let mut offset = 0u16;
 
-    let (read, size) = bincode::decode_from_slice::<BasicProgram, _>(&buf, config)
-        .map_err(|_| EepromError::LoadDecode)?;
-    *program = read;
+    // SAFETY
+    // lily has also blessed this function to work every time :3
+    // (i love her sm :333)
+    let mut command_buf = [0u8; size_of::<Option<BasicCommand>>()];
+    for command in program {
+        eeprom
+            .read(offset, &mut command_buf)
+            .map_err(|_| EepromError::Load)?;
+        *command = unsafe {
+            core::mem::transmute_copy::<[u8; size_of::<Option<BasicCommand>>()], Option<BasicCommand>>(
+                &command_buf,
+            )
+        };
+        for _ in 0..size_of::<Option<BasicCommand>>() {
+            uwrite!(serial, "{}", D!(".")).unwrap_infallible();
+            offset += 1;
+        }
+    }
+    uwrite!(serial, "{}", D!(" | ")).unwrap_infallible();
 
-    Ok(size)
+    let mut string_buf = [0u8; size_of::<Option<String>>()];
+    for string in string_table {
+        eeprom
+            .read(offset, &mut string_buf)
+            .map_err(|_| EepromError::Load)?;
+        *string = unsafe {
+            core::mem::transmute_copy::<[u8; size_of::<Option<String>>()], Option<String>>(
+                &string_buf,
+            )
+        };
+        for _ in 0..size_of::<Option<String>>() {
+            uwrite!(serial, "{}", D!(".")).unwrap_infallible();
+            offset += 1;
+        }
+    }
+    uwriteln!(serial, "{}", D!("done.\r\n\r")).unwrap_infallible();
+
+    Ok(())
 }

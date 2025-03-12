@@ -1,8 +1,6 @@
 use arduino_hal::prelude::*;
 
 use arrayvec::{ArrayString, ArrayVec};
-use bincode::{Decode, Encode};
-use serde::{Deserialize, Serialize};
 use ufmt::{derive::uDebug, uDisplay};
 
 #[derive(Clone, Copy)]
@@ -15,7 +13,7 @@ pub enum ExpectedArgument {
     Assignment,
 }
 
-#[derive(Copy, Clone, Debug, uDebug, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, uDebug)]
 pub enum MathOperator {
     Plus,
     Minus,
@@ -46,7 +44,7 @@ impl MathOperator {
     }
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, uDebug, Encode, Decode)]
+#[derive(Copy, Clone, Debug, PartialEq, uDebug)]
 pub enum ComparisionOperator {
     Equal,     // =
     NotEqual,  // <>

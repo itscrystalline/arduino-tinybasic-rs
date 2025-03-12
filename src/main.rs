@@ -23,7 +23,7 @@ const BACKSPACE_ASCII_SERIAL: u8 = b'\x08';
 const BACKSPACE_ASCII_QEMU: u8 = b'\x7f';
 
 #[cfg(not(feature = "full"))]
-const PROGRAM_LENGTH: usize = 40;
+const PROGRAM_LENGTH: usize = 32;
 #[cfg(feature = "full")]
 const PROGRAM_LENGTH: usize = 10;
 
@@ -107,7 +107,7 @@ fn main() -> ! {
     let mut program: BasicProgram = [const { None }; PROGRAM_LENGTH];
     let mut program_counter: Option<usize> = None;
     let mut variables = [0usize; 26];
-    let mut string_table: [Option<ArrayString<16>>; 10] = [None; 10];
+    let mut string_table: [Option<String>; 8] = [None; 8];
 
     let mut tokens = TokenBuffer::new();
     let mut number_buffer: Option<usize> = None;
@@ -195,20 +195,13 @@ fn main() -> ! {
                                                         .unwrap_infallible();
                                                 }
                                                 BasicControlFlow::Save => {
-                                                    match arduino::eeprom_save(
+                                                    if let Err(e) = arduino::eeprom_save(
+                                                        &mut serial,
                                                         &mut eeprom,
                                                         &program,
+                                                        &string_table,
                                                     ) {
-                                                        Ok(saved) => {
-                                                            uwriteln!(
-                                                                &mut serial,
-                                                                "{}{}",
-                                                                saved,
-                                                                SAVE
-                                                            )
-                                                            .unwrap_infallible();
-                                                        }
-                                                        Err(e) => match e {
+                                                        match e {
                                                             EepromError::SaveEncode => uwriteln!(
                                                                 &mut serial,
                                                                 "{}",
@@ -221,24 +214,17 @@ fn main() -> ! {
                                                             ),
                                                             _ => unreachable!(),
                                                         }
-                                                        .unwrap_infallible(),
+                                                        .unwrap_infallible()
                                                     }
                                                 }
                                                 BasicControlFlow::Load => {
-                                                    match arduino::eeprom_load(
+                                                    if let Err(e) = arduino::eeprom_load(
+                                                        &mut serial,
                                                         &eeprom,
                                                         &mut program,
+                                                        &mut string_table,
                                                     ) {
-                                                        Ok(loaded) => {
-                                                            uwriteln!(
-                                                                &mut serial,
-                                                                "{}{}",
-                                                                loaded,
-                                                                LOAD
-                                                            )
-                                                            .unwrap_infallible();
-                                                        }
-                                                        Err(e) => match e {
+                                                        match e {
                                                             EepromError::Load => {
                                                                 uwriteln!(&mut serial, "{}", E_LOAD)
                                                             }
@@ -249,7 +235,7 @@ fn main() -> ! {
                                                             ),
                                                             _ => unreachable!(),
                                                         }
-                                                        .unwrap_infallible(),
+                                                        .unwrap_infallible()
                                                     }
                                                 }
                                                 _ => (),
