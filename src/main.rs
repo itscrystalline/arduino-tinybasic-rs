@@ -9,6 +9,7 @@ use core::char;
 use arduino::Serial;
 use arduino_hal::prelude::*;
 use arrayvec::ArrayString;
+use avr_progmem::progmem;
 use basic::{
     expression::Expression,
     interpreter::{BasicCommand, BasicControlFlow, BasicLine, InterpretationError},
@@ -22,43 +23,9 @@ const BACKSPACE_ASCII_SERIAL: u8 = b'\x08';
 const BACKSPACE_ASCII_QEMU: u8 = b'\x7f';
 
 #[cfg(not(feature = "full"))]
-const PROGRAM_LENGTH: usize = 32;
+const PROGRAM_LENGTH: usize = 40;
 #[cfg(feature = "full")]
 const PROGRAM_LENGTH: usize = 10;
-
-#[cfg(feature = "full")]
-const ERROR_TABLE: [&str; 24] = [
-    "line num too much",
-    "arguments missing",
-    "arguments unexpected",
-    "unimplemented token",
-    "math stack limit reached",
-    "string table full",
-    "too much math in bool expr",
-    "too many tokens",
-    "malformed",
-    "str cap full",
-    "number overflow: max is ",
-    "UNIMPLEMENTED PRINT",
-    "incomplete expression",
-    "value overflowed",
-    "value underflowed",
-    "division by zero",
-    "number stack full",
-    "UNIMPLEMENTED",
-    "pin is not input",
-    "pin is not output",
-    "pin is not pwm",
-    "pin is not usable",
-    "pin is reserved",
-    "not 0 or 1",
-];
-
-#[cfg(not(feature = "full"))]
-const ERROR_TABLE: [&str; 24] = [
-    "E00", "E01", "E02", "E03", "E04", "E05", "E06", "E07", "E08", "E09", "E10", "E11", "E12",
-    "E13", "E14", "E15", "E16", "E17", "E18", "E19", "E20", "E21", "E22", "E23",
-];
 
 #[cfg(feature = "full")]
 fn print_sizes(serial: &mut Serial) {
@@ -88,11 +55,42 @@ fn print_sizes(serial: &mut Serial) {
     uwriteln!(serial, "arch word size: {} bytes\r", size_of::<usize>()).unwrap_infallible();
 }
 
+progmem! {
+    static progmem string GREET = "Starting TinyBASIC...\r";
+    static progmem string READY = "READY\r";
+    static progmem string PROMPT = "> ";
+
+    pub static progmem string E_LINE_TOO_MUCH = "line num too much\r";
+    pub static progmem string E_ARGS_MISSING = "arguments missing\r";
+    pub static progmem string E_ARGS_UNEXPECTED = "arguments unexpected\r";
+    pub static progmem string E_UNIMPLEMENTED_TOKEN = "unimplemented token\r";
+    pub static progmem string E_MATH_STACK = "math stack limit reached\r";
+    pub static progmem string E_STR_TAB_FULL = "string table full\r";
+    pub static progmem string E_MATH_IN_BOOL = "too much math in bool expr\r";
+    pub static progmem string E_TOKENS = "too many tokens\r";
+    pub static progmem string E_MALFORMED = "malformed\r";
+    pub static progmem string E_STR_CAP_FULL = "str cap full\r";
+    pub static progmem string E_NUM_OVERFLOW = "number overflow: max is ";
+    pub static progmem string E_UNIMPLEMENTED_PRINT = "UNIMPLEMENTED PRINT\r";
+    pub static progmem string E_INCOMPLETE_EXPR = "incomplete expression\r";
+    pub static progmem string E_VAL_OVERFLOW = "value overflowed\r";
+    pub static progmem string E_VAL_UNDERFLOW = "value underflowed\r";
+    pub static progmem string E_DIV_ZERO = "division by zero\r";
+    pub static progmem string E_NUM_STACK_FULL = "number stack full\r";
+    pub static progmem string E_UNIMPLEMENTED = "UNIMPLEMENTED\r";
+    pub static progmem string E_PIN_NOT_INPUT = "pin is not input\r";
+    pub static progmem string E_PIN_NOT_OUTPUT = "pin is not output\r";
+    pub static progmem string E_PIN_NOT_PWM = "pin is not pwm\r";
+    pub static progmem string E_PIN_UNUSABLE = "pin is not usable\r";
+    pub static progmem string E_PIN_RESERVED = "pin is reserved\r";
+    pub static progmem string E_NOT_BOOL = "not 0 or 1\r";
+}
+
 #[arduino_hal::entry]
 fn main() -> ! {
     let (mut pins, mut serial) = arduino::init();
 
-    uwriteln!(&mut serial, "Starting TinyBASIC...\r").unwrap_infallible();
+    uwriteln!(&mut serial, "{}", GREET).unwrap_infallible();
 
     #[cfg(feature = "full")]
     print_sizes(&mut serial);
@@ -108,7 +106,7 @@ fn main() -> ! {
     let mut keyword_buffer: Option<ArrayString<6>> = None;
 
     let mut input_buffer = ArrayString::<32>::new();
-    uwriteln!(&mut serial, "READY\r",).unwrap_infallible();
+    uwriteln!(&mut serial, "{}", READY).unwrap_infallible();
 
     loop {
         if let Some(counter) = program_counter {
@@ -131,12 +129,12 @@ fn main() -> ! {
 
             if next_count >= PROGRAM_LENGTH {
                 program_counter = None;
-                uwriteln!(&mut serial, "\r\nREADY\r").unwrap_infallible();
+                uwriteln!(&mut serial, "\r\n{}", READY).unwrap_infallible();
             } else {
                 _ = program_counter.insert(next_count);
             }
         } else {
-            uwrite!(&mut serial, "> ").unwrap_infallible();
+            uwrite!(&mut serial, "{}", PROMPT).unwrap_infallible();
             loop {
                 let char_u8 = serial.read_byte();
                 //uwrite!(&mut serial, "{} ", char_u8).unwrap_infallible();
@@ -182,7 +180,7 @@ fn main() -> ! {
                                                         &mut variables,
                                                         &mut string_table,
                                                     );
-                                                    uwriteln!(&mut serial, "\r\nOK\r")
+                                                    uwriteln!(&mut serial, "\r\n{}", READY)
                                                         .unwrap_infallible();
                                                 }
                                                 _ => (),
@@ -191,28 +189,28 @@ fn main() -> ! {
                                             program[line.line_num.unwrap_or(0)] =
                                                 Some(line.command);
                                         } else {
-                                            uwriteln!(&mut serial, "{}\r", ERROR_TABLE[0])
+                                            uwriteln!(&mut serial, "{}", E_LINE_TOO_MUCH)
                                                 .unwrap_infallible();
                                         }
                                     }
                                     Err(e) => match e {
                                         InterpretationError::NoArgs => {
-                                            uwriteln!(&mut serial, "{}\r", ERROR_TABLE[1])
+                                            uwriteln!(&mut serial, "{}", E_ARGS_MISSING)
                                         }
                                         InterpretationError::UnexpectedArgs => {
-                                            uwriteln!(&mut serial, "{}\r", ERROR_TABLE[2])
+                                            uwriteln!(&mut serial, "{}", E_ARGS_UNEXPECTED)
                                         }
                                         InterpretationError::UnimplementedToken => {
-                                            uwriteln!(&mut serial, "{}\r", ERROR_TABLE[3])
+                                            uwriteln!(&mut serial, "{}", E_UNIMPLEMENTED_TOKEN)
                                         }
                                         InterpretationError::StackFull => {
-                                            uwriteln!(&mut serial, "{}\r", ERROR_TABLE[4])
+                                            uwriteln!(&mut serial, "{}", E_MATH_STACK)
                                         }
                                         InterpretationError::StringTableFull => {
-                                            uwriteln!(&mut serial, "{}\r", ERROR_TABLE[5])
+                                            uwriteln!(&mut serial, "{}", E_STR_TAB_FULL)
                                         }
                                         InterpretationError::MathToBooleanFailed => {
-                                            uwriteln!(&mut serial, "{}\r", ERROR_TABLE[6])
+                                            uwriteln!(&mut serial, "{}", E_MATH_IN_BOOL)
                                         }
                                     }
                                     .unwrap_infallible(),
@@ -220,19 +218,17 @@ fn main() -> ! {
                             }
                             Err(e) => match e {
                                 ParseError::TooManyTokens => {
-                                    uwriteln!(&mut serial, "{}\r", ERROR_TABLE[7])
-                                        .unwrap_infallible()
+                                    uwriteln!(&mut serial, "{}", E_TOKENS).unwrap_infallible()
                                 }
                                 ParseError::Malformed => {
-                                    uwriteln!(&mut serial, "{}\r", ERROR_TABLE[8])
-                                        .unwrap_infallible()
+                                    uwriteln!(&mut serial, "{}", E_MALFORMED).unwrap_infallible()
                                 }
                                 ParseError::Capacity => {
-                                    uwriteln!(&mut serial, "{}\r", ERROR_TABLE[9])
+                                    uwriteln!(&mut serial, "{}", E_STR_CAP_FULL)
                                         .unwrap_infallible();
                                 }
                                 ParseError::NumberOverflow => {
-                                    uwriteln!(&mut serial, "{}[{}]\r", ERROR_TABLE[10], usize::MAX)
+                                    uwriteln!(&mut serial, "{}[{}]\r", E_NUM_OVERFLOW, usize::MAX)
                                         .unwrap_infallible();
                                 }
                             },
@@ -246,7 +242,7 @@ fn main() -> ! {
                     }
                     BACKSPACE_ASCII_SERIAL | BACKSPACE_ASCII_QEMU => {
                         if input_buffer.pop().is_some() {
-                            uwrite!(&mut serial, "\r\n> ").unwrap_infallible();
+                            uwrite!(&mut serial, "\r\n{}", PROMPT).unwrap_infallible();
                             input_buffer
                                 .chars()
                                 .for_each(|c| uwrite!(&mut serial, "{}", c).unwrap_infallible());
@@ -298,12 +294,12 @@ fn list(
             uwrite!(serial, "{} ", line_num).unwrap_infallible();
 
             match line {
-                BasicCommand::List => uwrite!(serial, "LIST").unwrap_infallible(),
-                BasicCommand::End => uwrite!(serial, "END").unwrap_infallible(),
-                BasicCommand::Run => uwrite!(serial, "RUN").unwrap_infallible(),
-                BasicCommand::Rem => uwrite!(serial, "REM").unwrap_infallible(),
+                BasicCommand::List => uwriteln!(serial, "LIST\r").unwrap_infallible(),
+                BasicCommand::End => uwriteln!(serial, "END\r").unwrap_infallible(),
+                BasicCommand::Run => uwriteln!(serial, "RUN\r").unwrap_infallible(),
+                BasicCommand::Rem => uwriteln!(serial, "REM\r").unwrap_infallible(),
                 BasicCommand::Goto(line_num) if line_num.is_some() => {
-                    uwrite!(serial, "GOTO {}", line_num.unwrap()).unwrap_infallible()
+                    uwriteln!(serial, "GOTO {}\r", line_num.unwrap()).unwrap_infallible()
                 }
                 BasicCommand::Print(Some(expr)) => {
                     uwrite!(serial, "PRINT ").unwrap_infallible();
@@ -314,30 +310,31 @@ fn list(
                                 .unwrap()
                                 .chars()
                                 .for_each(|c| uwrite!(serial, "{}", c).unwrap_infallible());
-                            uwrite!(serial, "\"").unwrap_infallible();
+                            uwrite!(serial, "\"\r\n").unwrap_infallible();
                         }
-                        Expression::Math(_) => uwrite!(serial, "<MATHEXPR>").unwrap_infallible(),
+                        Expression::Math(_) => {
+                            uwriteln!(serial, "<MATHEXPR>\r").unwrap_infallible()
+                        }
                         Expression::Boolean(_, Some(rel), _) => {
-                            uwrite!(serial, "<MATHEXPR> {} <MATHEXPR>", rel).unwrap_infallible()
+                            uwriteln!(serial, "<MATHEXPR> {} <MATHEXPR>\r", rel).unwrap_infallible()
                         }
-                        _ => uwrite!(serial, "{}", ERROR_TABLE[11]).unwrap_infallible(),
+                        _ => uwriteln!(serial, "{}", E_UNIMPLEMENTED_PRINT).unwrap_infallible(),
                     }
                 }
                 BasicCommand::Let(Some(var_idx), Some(_)) => {
-                    uwrite!(serial, "LET {} = <MATHEXPR>", (*var_idx + b'A') as char)
+                    uwriteln!(serial, "LET {} = <MATHEXPR>\r", (*var_idx + b'A') as char)
                         .unwrap_infallible();
                 }
                 BasicCommand::If(
                     Expression::Boolean(Some(lhs), Some(op), Some(rhs)),
                     Some(goto_dest),
                 ) => {
-                    uwrite!(serial, "IF {} {} {} THEN {}", lhs, op, rhs, goto_dest)
+                    uwriteln!(serial, "IF {} {} {} THEN {}\r", lhs, op, rhs, goto_dest)
                         .unwrap_infallible();
                 }
-                _ => uwrite!(serial, "{}", ERROR_TABLE[11]).unwrap_infallible(),
+                _ => uwriteln!(serial, "{}", E_UNIMPLEMENTED_PRINT).unwrap_infallible(),
             }
-            uwriteln!(serial, "\r").unwrap_infallible();
         }
     });
-    uwriteln!(serial, "\r\nOK\r").unwrap_infallible();
+    uwriteln!(serial, "\r\n{}", READY).unwrap_infallible();
 }

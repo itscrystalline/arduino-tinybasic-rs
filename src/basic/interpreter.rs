@@ -7,7 +7,9 @@ use ufmt::{uDebug, uDisplay, uwrite, uwriteln};
 use crate::{
     arduino::{PinError, Pins},
     basic::lexer::{ComparisionOperator, ExpectedArgument, Keyword, Token},
-    put_string_table, Serial, ERROR_TABLE, PROGRAM_LENGTH,
+    put_string_table, Serial, E_DIV_ZERO, E_INCOMPLETE_EXPR, E_NOT_BOOL, E_NUM_STACK_FULL,
+    E_PIN_NOT_INPUT, E_PIN_NOT_OUTPUT, E_PIN_NOT_PWM, E_PIN_RESERVED, E_PIN_UNUSABLE,
+    E_UNIMPLEMENTED, E_VAL_OVERFLOW, E_VAL_UNDERFLOW, PROGRAM_LENGTH,
 };
 
 use super::{
@@ -76,60 +78,60 @@ impl BasicCommand {
         string_table: &[Option<String>],
     ) -> BasicControlFlow {
         match self {
-            BasicCommand::Print(Some(expr)) => {
-                match expr {
-                    Expression::String(table_idx) => string_table[*table_idx as usize]
+            BasicCommand::Print(Some(expr)) => match expr {
+                Expression::String(table_idx) => {
+                    string_table[*table_idx as usize]
                         .unwrap()
                         .chars()
-                        .for_each(|ch| uwrite!(serial, "{}", ch).unwrap_infallible()),
-                    Expression::Math(numbers) => {
-                        let result = Expression::evaluate_math(numbers.clone(), variables);
-                        match result {
-                            Ok(res) => uwrite!(serial, "{}", res),
-                            Err(e) => match e {
-                                EvaluationError::Incomplete => {
-                                    uwrite!(serial, "{}", ERROR_TABLE[12])
-                                }
-                                EvaluationError::Overflow => uwrite!(serial, "{}", ERROR_TABLE[13]),
-                                EvaluationError::Underflow => {
-                                    uwrite!(serial, "{}", ERROR_TABLE[14])
-                                }
-                                EvaluationError::DivideByZero => {
-                                    uwrite!(serial, "{}", ERROR_TABLE[15])
-                                }
-                                EvaluationError::StackFull => {
-                                    uwrite!(serial, "{}", ERROR_TABLE[16])
-                                }
-                            },
-                        }
-                        .unwrap_infallible();
-                    }
-                    Expression::Boolean(Some(left), Some(cmp), Some(right)) => {
-                        let res = Expression::evaluate_boolean(cmp, *left, *right, variables);
-                        match res {
-                            Ok(val) => uwrite!(serial, "{}", val).unwrap_infallible(),
-                            Err(e) => match e {
-                                EvaluationError::Incomplete => {
-                                    uwrite!(serial, "{}", ERROR_TABLE[12])
-                                }
-                                EvaluationError::Overflow => uwrite!(serial, "{}", ERROR_TABLE[13]),
-                                EvaluationError::Underflow => {
-                                    uwrite!(serial, "{}", ERROR_TABLE[14])
-                                }
-                                EvaluationError::DivideByZero => {
-                                    uwrite!(serial, "{}", ERROR_TABLE[15])
-                                }
-                                EvaluationError::StackFull => {
-                                    uwrite!(serial, "{}", ERROR_TABLE[16])
-                                }
-                            }
-                            .unwrap_infallible(),
-                        }
-                    }
-                    _ => uwrite!(serial, "{}", ERROR_TABLE[12]).unwrap_infallible(),
+                        .for_each(|ch| uwrite!(serial, "{}", ch).unwrap_infallible());
+                    uwriteln!(serial, "\r").unwrap_infallible();
                 }
-                uwriteln!(serial, "\r").unwrap_infallible();
-            }
+                Expression::Math(numbers) => {
+                    let result = Expression::evaluate_math(numbers.clone(), variables);
+                    match result {
+                        Ok(res) => uwriteln!(serial, "{}\r", res),
+                        Err(e) => match e {
+                            EvaluationError::Incomplete => {
+                                uwriteln!(serial, "{}", E_INCOMPLETE_EXPR)
+                            }
+                            EvaluationError::Overflow => uwrite!(serial, "{}", E_VAL_OVERFLOW),
+                            EvaluationError::Underflow => {
+                                uwriteln!(serial, "{}", E_VAL_UNDERFLOW)
+                            }
+                            EvaluationError::DivideByZero => {
+                                uwriteln!(serial, "{}", E_DIV_ZERO)
+                            }
+                            EvaluationError::StackFull => {
+                                uwriteln!(serial, "{}", E_NUM_STACK_FULL)
+                            }
+                        },
+                    }
+                    .unwrap_infallible();
+                }
+                Expression::Boolean(Some(left), Some(cmp), Some(right)) => {
+                    let res = Expression::evaluate_boolean(cmp, *left, *right, variables);
+                    match res {
+                        Ok(val) => uwriteln!(serial, "{}\r", val).unwrap_infallible(),
+                        Err(e) => match e {
+                            EvaluationError::Incomplete => {
+                                uwriteln!(serial, "{}", E_INCOMPLETE_EXPR)
+                            }
+                            EvaluationError::Overflow => uwriteln!(serial, "{}", E_VAL_OVERFLOW),
+                            EvaluationError::Underflow => {
+                                uwriteln!(serial, "{}", E_VAL_UNDERFLOW)
+                            }
+                            EvaluationError::DivideByZero => {
+                                uwriteln!(serial, "{}", E_DIV_ZERO)
+                            }
+                            EvaluationError::StackFull => {
+                                uwriteln!(serial, "{}", E_NUM_STACK_FULL)
+                            }
+                        }
+                        .unwrap_infallible(),
+                    }
+                }
+                _ => uwriteln!(serial, "{}", E_INCOMPLETE_EXPR).unwrap_infallible(),
+            },
             BasicCommand::Run => return BasicControlFlow::Run,
             BasicCommand::End => return BasicControlFlow::End,
             BasicCommand::Clear => return BasicControlFlow::Clear,
@@ -144,22 +146,21 @@ impl BasicCommand {
                     Err(e) => {
                         match e {
                             EvaluationError::Incomplete => {
-                                uwrite!(serial, "{}", ERROR_TABLE[12]).unwrap_infallible()
+                                uwriteln!(serial, "{}", E_INCOMPLETE_EXPR).unwrap_infallible()
                             }
                             EvaluationError::Overflow => {
-                                uwrite!(serial, "{}", ERROR_TABLE[13]).unwrap_infallible()
+                                uwriteln!(serial, "{}", E_VAL_OVERFLOW).unwrap_infallible()
                             }
                             EvaluationError::Underflow => {
-                                uwrite!(serial, "{}", ERROR_TABLE[14]).unwrap_infallible()
+                                uwriteln!(serial, "{}", E_VAL_UNDERFLOW).unwrap_infallible()
                             }
                             EvaluationError::DivideByZero => {
-                                uwrite!(serial, "{}", ERROR_TABLE[15]).unwrap_infallible()
+                                uwriteln!(serial, "{}", E_DIV_ZERO).unwrap_infallible()
                             }
                             EvaluationError::StackFull => {
-                                uwrite!(serial, "{}", ERROR_TABLE[16]).unwrap_infallible()
+                                uwriteln!(serial, "{}", E_NUM_STACK_FULL).unwrap_infallible()
                             }
                         };
-                        uwriteln!(serial, "\r").unwrap_infallible();
                         return BasicControlFlow::End;
                     }
                 };
@@ -178,19 +179,18 @@ impl BasicCommand {
                     Err(e) => {
                         match e {
                             EvaluationError::Incomplete => {
-                                uwrite!(serial, "{}", ERROR_TABLE[12])
+                                uwriteln!(serial, "{}", E_INCOMPLETE_EXPR)
                             }
-                            EvaluationError::Overflow => uwrite!(serial, "{}", ERROR_TABLE[13]),
-                            EvaluationError::Underflow => uwrite!(serial, "{}", ERROR_TABLE[14]),
+                            EvaluationError::Overflow => uwriteln!(serial, "{}", E_VAL_OVERFLOW),
+                            EvaluationError::Underflow => uwriteln!(serial, "{}", E_VAL_UNDERFLOW),
                             EvaluationError::DivideByZero => {
-                                uwrite!(serial, "{}", ERROR_TABLE[15])
+                                uwriteln!(serial, "{}", E_DIV_ZERO)
                             }
                             EvaluationError::StackFull => {
-                                uwrite!(serial, "{}", ERROR_TABLE[16])
+                                uwriteln!(serial, "{}", E_NUM_STACK_FULL)
                             }
                         }
                         .unwrap_infallible();
-                        uwriteln!(serial, "\r").unwrap_infallible();
                         return BasicControlFlow::End;
                     }
                 }
@@ -201,11 +201,11 @@ impl BasicCommand {
                         variables[*var_idx as usize] = read;
                     }
                     Err(e) => match e {
-                        PinError::NotInput => uwriteln!(serial, "{}\r", ERROR_TABLE[18]),
-                        PinError::NotOutput => uwriteln!(serial, "{}\r", ERROR_TABLE[19]),
-                        PinError::NotPwm => uwriteln!(serial, "{}\r", ERROR_TABLE[20]),
-                        PinError::NonAddressable => uwriteln!(serial, "{}\r", ERROR_TABLE[21]),
-                        PinError::Reserved => uwriteln!(serial, "{}\r", ERROR_TABLE[22]),
+                        PinError::NotInput => uwriteln!(serial, "{}", E_PIN_NOT_INPUT),
+                        PinError::NotOutput => uwriteln!(serial, "{}", E_PIN_NOT_OUTPUT),
+                        PinError::NotPwm => uwriteln!(serial, "{}", E_PIN_NOT_PWM),
+                        PinError::NonAddressable => uwriteln!(serial, "{}", E_PIN_UNUSABLE),
+                        PinError::Reserved => uwriteln!(serial, "{}", E_PIN_RESERVED),
                     }
                     .unwrap_infallible(),
                 }
@@ -216,11 +216,11 @@ impl BasicCommand {
                         variables[*var_idx as usize] = read as usize;
                     }
                     Err(e) => match e {
-                        PinError::NotInput => uwriteln!(serial, "{}\r", ERROR_TABLE[18]),
-                        PinError::NotOutput => uwriteln!(serial, "{}\r", ERROR_TABLE[19]),
-                        PinError::NotPwm => uwriteln!(serial, "{}\r", ERROR_TABLE[20]),
-                        PinError::NonAddressable => uwriteln!(serial, "{}\r", ERROR_TABLE[21]),
-                        PinError::Reserved => uwriteln!(serial, "{}\r", ERROR_TABLE[22]),
+                        PinError::NotInput => uwriteln!(serial, "{}", E_PIN_NOT_INPUT),
+                        PinError::NotOutput => uwriteln!(serial, "{}", E_PIN_NOT_OUTPUT),
+                        PinError::NotPwm => uwriteln!(serial, "{}", E_PIN_NOT_PWM),
+                        PinError::NonAddressable => uwriteln!(serial, "{}", E_PIN_UNUSABLE),
+                        PinError::Reserved => uwriteln!(serial, "{}", E_PIN_RESERVED),
                     }
                     .unwrap_infallible(),
                 }
@@ -231,7 +231,7 @@ impl BasicCommand {
                         MathToken::Variable(idx) => variables[idx as usize],
                         MathToken::Literal(num) => num,
                         _ => {
-                            uwriteln!(serial, "{}\r", ERROR_TABLE[12]).unwrap_infallible();
+                            uwriteln!(serial, "{}", E_INCOMPLETE_EXPR).unwrap_infallible();
                             return BasicControlFlow::End;
                         }
                     };
@@ -239,24 +239,24 @@ impl BasicCommand {
                         0 => false,
                         1 => true,
                         _ => {
-                            uwriteln!(serial, "{}\r", ERROR_TABLE[23]).unwrap_infallible();
+                            uwriteln!(serial, "{}", E_NOT_BOOL).unwrap_infallible();
                             return BasicControlFlow::End;
                         }
                     }
                 };
                 if let Err(e) = pins.write_digital(*pin as usize, bool_val) {
                     match e {
-                        PinError::NotInput => uwriteln!(serial, "{}\r", ERROR_TABLE[18]),
-                        PinError::NotOutput => uwriteln!(serial, "{}\r", ERROR_TABLE[19]),
-                        PinError::NotPwm => uwriteln!(serial, "{}\r", ERROR_TABLE[20]),
-                        PinError::NonAddressable => uwriteln!(serial, "{}\r", ERROR_TABLE[21]),
-                        PinError::Reserved => uwriteln!(serial, "{}\r", ERROR_TABLE[22]),
+                        PinError::NotInput => uwriteln!(serial, "{}", E_PIN_NOT_INPUT),
+                        PinError::NotOutput => uwriteln!(serial, "{}", E_PIN_NOT_OUTPUT),
+                        PinError::NotPwm => uwriteln!(serial, "{}", E_PIN_NOT_PWM),
+                        PinError::NonAddressable => uwriteln!(serial, "{}", E_PIN_UNUSABLE),
+                        PinError::Reserved => uwriteln!(serial, "{}", E_PIN_RESERVED),
                     }
                     .unwrap_infallible();
                 }
             }
             BasicCommand::Rem => (),
-            _ => uwriteln!(serial, "{}\r", ERROR_TABLE[17]).unwrap_infallible(),
+            _ => uwriteln!(serial, "{}", E_UNIMPLEMENTED).unwrap_infallible(),
         }
         BasicControlFlow::Continue
     }
@@ -319,6 +319,9 @@ impl BasicLine {
                         Keyword::Print => {
                             command = BasicCommand::Print(None);
                             expected = Some(ExpectedArgument::Expression);
+                        }
+                        Keyword::Rem => {
+                            single_command!(command, expected, BasicCommand::Rem);
                         }
                         Keyword::Run => {
                             single_command!(command, expected, BasicCommand::Run);
