@@ -94,6 +94,7 @@ impl ComparisionOperator {
 
 #[derive(Copy, Clone, Debug, uDebug)]
 pub enum Keyword {
+    Rem,
     Print,
     If,
     Then,
@@ -114,6 +115,7 @@ struct InvalidKeywordError;
 impl Keyword {
     fn from(value: ArrayString<6>) -> Result<Self, InvalidKeywordError> {
         match value.as_str() {
+            "REM" => Ok(Keyword::Rem),
             "PRINT" => Ok(Keyword::Print),
             "IF" => Ok(Keyword::If),
             "THEN" => Ok(Keyword::Then),
