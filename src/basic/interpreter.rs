@@ -2,14 +2,16 @@ use core::char;
 
 use arduino_hal::prelude::*;
 use arrayvec::ArrayVec;
+use bincode::{Decode, Encode};
+use serde::{Deserialize, Serialize};
 use ufmt::{uDebug, uDisplay, uwrite, uwriteln};
 
 use crate::{
     arduino::{PinError, Pins},
     basic::lexer::{ComparisionOperator, ExpectedArgument, Keyword, Token},
-    put_string_table, Serial, E_DIV_ZERO, E_INCOMPLETE_EXPR, E_NOT_BOOL, E_NUM_STACK_FULL,
-    E_PIN_NOT_INPUT, E_PIN_NOT_OUTPUT, E_PIN_NOT_PWM, E_PIN_RESERVED, E_PIN_UNUSABLE,
-    E_UNIMPLEMENTED, E_VAL_OVERFLOW, E_VAL_UNDERFLOW, PROGRAM_LENGTH,
+    put_string_table, BasicProgram, Serial, E_DIV_ZERO, E_INCOMPLETE_EXPR, E_NOT_BOOL,
+    E_NUM_STACK_FULL, E_PIN_NOT_INPUT, E_PIN_NOT_OUTPUT, E_PIN_NOT_PWM, E_PIN_RESERVED,
+    E_PIN_UNUSABLE, E_UNIMPLEMENTED, E_VAL_OVERFLOW, E_VAL_UNDERFLOW, PROGRAM_LENGTH,
 };
 
 use super::{
@@ -24,6 +26,8 @@ pub enum BasicControlFlow {
     End,
     List,
     Clear,
+    Save,
+    Load,
     Goto(usize),
 }
 pub enum InterpretationError {
@@ -35,7 +39,7 @@ pub enum InterpretationError {
     MathToBooleanFailed,
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Serialize, Deserialize)]
 pub enum MathToken {
     Operator(MathOperator),
     Variable(u8),
@@ -54,11 +58,11 @@ impl uDisplay for MathToken {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Encode, Decode)]
 pub enum BasicCommand {
-    AnalogRead(Option<u8>, Option<MathToken>),
-    DigitalRead(Option<u8>, Option<MathToken>),
-    DigitalWrite(Option<u8>, Option<MathToken>),
+    AnalogRead(Option<u8>, #[bincode(with_serde)] Option<MathToken>),
+    DigitalRead(Option<u8>, #[bincode(with_serde)] Option<MathToken>),
+    DigitalWrite(Option<u8>, #[bincode(with_serde)] Option<MathToken>),
     Goto(Option<usize>),
     Print(Option<Expression>),
     If(Expression, Option<usize>),
@@ -68,6 +72,8 @@ pub enum BasicCommand {
     List,
     Clear,
     Rem,
+    Load,
+    Save,
 }
 impl BasicCommand {
     pub fn execute(
@@ -135,6 +141,8 @@ impl BasicCommand {
             BasicCommand::Run => return BasicControlFlow::Run,
             BasicCommand::End => return BasicControlFlow::End,
             BasicCommand::Clear => return BasicControlFlow::Clear,
+            BasicCommand::Save => return BasicControlFlow::Save,
+            BasicCommand::Load => return BasicControlFlow::Load,
             BasicCommand::Goto(line) if line.is_some() => {
                 return BasicControlFlow::Goto(line.unwrap())
             }
@@ -279,7 +287,7 @@ impl BasicLine {
 
     pub fn from_tokens(
         tokens: &mut TokenBuffer,
-        program: &mut [Option<BasicCommand>; PROGRAM_LENGTH],
+        program: &mut BasicProgram,
         string_table: &mut [Option<String>],
     ) -> Result<BasicLine, InterpretationError> {
         macro_rules! single_command {
@@ -334,6 +342,12 @@ impl BasicLine {
                         }
                         Keyword::Clear => {
                             single_command!(command, expected, BasicCommand::Clear);
+                        }
+                        Keyword::Save => {
+                            single_command!(command, expected, BasicCommand::Save);
+                        }
+                        Keyword::Load => {
+                            single_command!(command, expected, BasicCommand::Load);
                         }
                         Keyword::Goto => {
                             command = BasicCommand::Goto(None);

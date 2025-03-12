@@ -1,6 +1,8 @@
 use arduino_hal::prelude::*;
 
 use arrayvec::{ArrayString, ArrayVec};
+use bincode::{Decode, Encode};
+use serde::{Deserialize, Serialize};
 use ufmt::{derive::uDebug, uDisplay};
 
 #[derive(Clone, Copy)]
@@ -13,7 +15,7 @@ pub enum ExpectedArgument {
     Assignment,
 }
 
-#[derive(Copy, Clone, Debug, uDebug)]
+#[derive(Copy, Clone, Debug, uDebug, Serialize, Deserialize)]
 pub enum MathOperator {
     Plus,
     Minus,
@@ -44,7 +46,7 @@ impl MathOperator {
     }
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, uDebug)]
+#[derive(Copy, Clone, Debug, PartialEq, uDebug, Encode, Decode)]
 pub enum ComparisionOperator {
     Equal,     // =
     NotEqual,  // <>
@@ -105,6 +107,8 @@ pub enum Keyword {
     List,
     Run,
     End,
+    Load,
+    Save,
 
     AnalogRead,
     DigitalRead,
@@ -126,6 +130,9 @@ impl Keyword {
             "LIST" => Ok(Keyword::List),
             "RUN" => Ok(Keyword::Run),
             "END" => Ok(Keyword::End),
+
+            "LOAD" => Ok(Keyword::Load),
+            "SAVE" => Ok(Keyword::Save),
 
             "AREAD" => Ok(Keyword::AnalogRead),
             "DREAD" => Ok(Keyword::DigitalRead),

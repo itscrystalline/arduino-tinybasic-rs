@@ -1,11 +1,18 @@
-use arduino_hal::port::{
-    mode::{self, Floating},
-    Pin,
+use arduino_hal::{
+    eeprom::OutOfBoundsError,
+    port::{
+        mode::{self, Floating},
+        Pin,
+    },
+    Eeprom,
 };
+use serde::Serialize;
+
+use crate::{basic::interpreter::BasicCommand, BasicProgram, PROGRAM_LENGTH};
 
 pub type Serial = arduino_hal::hal::usart::Usart0<arduino_hal::DefaultClock>;
 
-pub fn init() -> (Pins, Serial) {
+pub fn init() -> (Pins, Serial, Eeprom) {
     let dp = arduino_hal::Peripherals::take().unwrap();
     Pins::init(dp)
 }
@@ -27,8 +34,9 @@ pub enum PinError {
 }
 
 impl Pins {
-    pub fn init(dp: arduino_hal::Peripherals) -> (Self, Serial) {
+    pub fn init(dp: arduino_hal::Peripherals) -> (Self, Serial, Eeprom) {
         let adc = arduino_hal::Adc::new(dp.ADC, Default::default());
+        let eeprom = arduino_hal::Eeprom::new(dp.EEPROM);
         let mut adc_opt = Some(adc);
         let pins = arduino_hal::pins!(dp);
 
@@ -95,6 +103,7 @@ impl Pins {
                 pins.d1.into_output(),
                 arduino_hal::hal::usart::BaudrateArduinoExt::into_baudrate(57600),
             ),
+            eeprom,
         )
     }
 
@@ -165,4 +174,33 @@ impl Pins {
             Err(PinError::NotOutput)
         }
     }
+}
+
+pub enum EepromError {
+    SaveEncode,
+    SaveStore,
+    Load,
+    LoadDecode,
+}
+
+pub fn eeprom_save(eeprom: &mut Eeprom, program: &BasicProgram) -> Result<usize, EepromError> {
+    let config = bincode::config::standard();
+    let mut buf = [0u8; 1024];
+    let saved = bincode::encode_into_slice(program, &mut buf, config)
+        .map_err(|_| EepromError::SaveEncode)?;
+
+    eeprom.write(0, &buf).map_err(|_| EepromError::SaveStore)?;
+    Ok(saved)
+}
+
+pub fn eeprom_load(eeprom: &Eeprom, program: &mut BasicProgram) -> Result<usize, EepromError> {
+    let config = bincode::config::standard();
+    let mut buf = [0u8; 1024];
+    eeprom.read(0, &mut buf).map_err(|_| EepromError::Load)?;
+
+    let (read, size) = bincode::decode_from_slice::<BasicProgram, _>(&buf, config)
+        .map_err(|_| EepromError::LoadDecode)?;
+    *program = read;
+
+    Ok(size)
 }

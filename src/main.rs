@@ -6,7 +6,7 @@ mod basic;
 
 use core::char;
 
-use arduino::Serial;
+use arduino::{EepromError, Serial};
 use arduino_hal::prelude::*;
 use arrayvec::ArrayString;
 use avr_progmem::progmem;
@@ -59,6 +59,8 @@ progmem! {
     static progmem string GREET = "Starting TinyBASIC...\r";
     static progmem string READY = "READY\r";
     static progmem string PROMPT = "> ";
+    static progmem string SAVE = " bytes saved to EEPROM\r";
+    static progmem string LOAD = " bytes loaded from EEPROM\r";
 
     pub static progmem string E_LINE_TOO_MUCH = "line num too much\r";
     pub static progmem string E_ARGS_MISSING = "arguments missing\r";
@@ -84,18 +86,25 @@ progmem! {
     pub static progmem string E_PIN_UNUSABLE = "pin is not usable\r";
     pub static progmem string E_PIN_RESERVED = "pin is reserved\r";
     pub static progmem string E_NOT_BOOL = "not 0 or 1\r";
+    pub static progmem string E_SAVE_ENCODE = "failed to encode program\r";
+    pub static progmem string E_SAVE_STORE = "failed to store program in EEPROM\r";
+    pub static progmem string E_LOAD = "failed to load from EEPROM\r";
+    pub static progmem string E_LOAD_DECODE = "failed to decode program\r";
+
 }
+
+pub type BasicProgram = [Option<BasicCommand>; PROGRAM_LENGTH];
 
 #[arduino_hal::entry]
 fn main() -> ! {
-    let (mut pins, mut serial) = arduino::init();
+    let (mut pins, mut serial, mut eeprom) = arduino::init();
 
     uwriteln!(&mut serial, "{}", GREET).unwrap_infallible();
 
     #[cfg(feature = "full")]
     print_sizes(&mut serial);
 
-    let mut program: [Option<BasicCommand>; PROGRAM_LENGTH] = [const { None }; PROGRAM_LENGTH];
+    let mut program: BasicProgram = [const { None }; PROGRAM_LENGTH];
     let mut program_counter: Option<usize> = None;
     let mut variables = [0usize; 26];
     let mut string_table: [Option<ArrayString<16>>; 10] = [None; 10];
@@ -114,7 +123,6 @@ fn main() -> ! {
 
             if let Some(command) = &program[counter] {
                 match command.execute(&mut serial, &mut pins, &mut variables, &string_table) {
-                    BasicControlFlow::Run => (),
                     BasicControlFlow::Goto(line) => next_count = line,
                     BasicControlFlow::End => next_count = PROGRAM_LENGTH,
                     BasicControlFlow::List => {
@@ -123,7 +131,10 @@ fn main() -> ! {
                     BasicControlFlow::Clear => {
                         clear(&mut program, &mut variables, &mut string_table);
                     }
-                    BasicControlFlow::Continue => (),
+                    BasicControlFlow::Save
+                    | BasicControlFlow::Load
+                    | BasicControlFlow::Run
+                    | BasicControlFlow::Continue => (),
                 }
             }
 
@@ -182,6 +193,64 @@ fn main() -> ! {
                                                     );
                                                     uwriteln!(&mut serial, "\r\n{}", READY)
                                                         .unwrap_infallible();
+                                                }
+                                                BasicControlFlow::Save => {
+                                                    match arduino::eeprom_save(
+                                                        &mut eeprom,
+                                                        &program,
+                                                    ) {
+                                                        Ok(saved) => {
+                                                            uwriteln!(
+                                                                &mut serial,
+                                                                "{}{}",
+                                                                saved,
+                                                                SAVE
+                                                            )
+                                                            .unwrap_infallible();
+                                                        }
+                                                        Err(e) => match e {
+                                                            EepromError::SaveEncode => uwriteln!(
+                                                                &mut serial,
+                                                                "{}",
+                                                                E_SAVE_ENCODE
+                                                            ),
+                                                            EepromError::SaveStore => uwriteln!(
+                                                                &mut serial,
+                                                                "{}",
+                                                                E_SAVE_STORE
+                                                            ),
+                                                            _ => unreachable!(),
+                                                        }
+                                                        .unwrap_infallible(),
+                                                    }
+                                                }
+                                                BasicControlFlow::Load => {
+                                                    match arduino::eeprom_load(
+                                                        &eeprom,
+                                                        &mut program,
+                                                    ) {
+                                                        Ok(loaded) => {
+                                                            uwriteln!(
+                                                                &mut serial,
+                                                                "{}{}",
+                                                                loaded,
+                                                                LOAD
+                                                            )
+                                                            .unwrap_infallible();
+                                                        }
+                                                        Err(e) => match e {
+                                                            EepromError::Load => {
+                                                                uwriteln!(&mut serial, "{}", E_LOAD)
+                                                            }
+                                                            EepromError::LoadDecode => uwriteln!(
+                                                                &mut serial,
+                                                                "{}",
+                                                                E_LOAD_DECODE
+                                                            ),
+                                                            _ => unreachable!(),
+                                                        }
+                                                        .unwrap_infallible(),
+                                                    }
                                                 }
                                                 _ => (),
                                             }
@@ -274,7 +343,7 @@ pub fn put_string_table(
 }
 
 pub fn clear(
-    program: &mut [Option<BasicCommand>],
+    program: &mut BasicProgram,
     variables: &mut [usize],
     string_table: &mut [Option<String>],
 ) {
@@ -285,7 +354,7 @@ pub fn clear(
 
 fn list(
     serial: &mut Serial,
-    program: &[Option<BasicCommand>],
+    program: &BasicProgram,
     variables: &[usize],
     string_table: &[Option<String>],
 ) {

@@ -1,18 +1,19 @@
 use arrayvec::ArrayVec;
+use bincode::{Decode, Encode};
 
 use super::{
     interpreter::MathToken,
     lexer::{ComparisionOperator, MathOperator},
 };
 
-#[derive(Clone)]
+#[derive(Clone, Encode, Decode)]
 pub enum Expression {
     String(u8),
-    Math(ArrayVec<MathToken, 5>),
+    Math(#[bincode(with_serde)] ArrayVec<MathToken, 5>),
     Boolean(
-        Option<MathToken>,
+        #[bincode(with_serde)] Option<MathToken>,
         Option<ComparisionOperator>,
-        Option<MathToken>,
+        #[bincode(with_serde)] Option<MathToken>,
     ),
 }
 pub enum EvaluationError {
