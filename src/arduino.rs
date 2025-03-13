@@ -180,10 +180,10 @@ impl Pins {
 }
 
 pub enum EepromError {
-    SaveEncode,
-    SaveStore,
-    Load,
-    LoadDecode,
+    SaveProgram,
+    SaveString,
+    LoadProgram,
+    LoadString,
 }
 
 pub fn eeprom_save(
@@ -197,6 +197,8 @@ pub fn eeprom_save(
     // SAFETY
     // lily (my blahaj) has looked at this code VERY hard and she says its ok :3
     // guarenteed by lily herself :3c
+
+    uwrite!(serial, "{}", D!("program ")).unwrap_infallible();
     let mut command_buf: [u8; size_of::<Option<BasicCommand>>()];
     for command in program {
         command_buf = unsafe {
@@ -204,26 +206,41 @@ pub fn eeprom_save(
                 command,
             )
         };
-        command_buf.into_iter().for_each(|j| {
-            eeprom.write_byte(offset, j);
-            uwrite!(serial, "{}", D!(".")).unwrap_infallible();
+        for j in command_buf.as_slice().windows(1) {
+            let existing = eeprom.read_byte(offset);
+            if existing != j[0] {
+                eeprom
+                    .write(offset, j)
+                    .map_err(|_| EepromError::SaveProgram)?;
+                uwrite!(serial, "{}", D!(":")).unwrap_infallible();
+            } else {
+                uwrite!(serial, "{}", D!(".")).unwrap_infallible();
+            }
             offset += 1;
-        });
+        }
     }
-    uwrite!(serial, "{}", D!(" | ")).unwrap_infallible();
+    uwriteln!(serial, "{}", D!("\r")).unwrap_infallible();
 
+    uwrite!(serial, "{}", D!("string table ")).unwrap_infallible();
     let mut string_buf: [u8; size_of::<Option<String>>()];
     for string in string_table {
         string_buf = unsafe {
             core::mem::transmute_copy::<Option<String>, [u8; size_of::<Option<String>>()]>(string)
         };
-        string_buf.into_iter().for_each(|j| {
-            eeprom.write_byte(offset, j);
-            uwrite!(serial, "{}", D!(".")).unwrap_infallible();
+        for j in string_buf.as_slice().windows(1) {
+            let existing = eeprom.read_byte(offset);
+            if existing != j[0] {
+                eeprom
+                    .write(offset, j)
+                    .map_err(|_| EepromError::SaveString)?;
+                uwrite!(serial, "{}", D!(":")).unwrap_infallible();
+            } else {
+                uwrite!(serial, "{}", D!(".")).unwrap_infallible();
+            }
             offset += 1;
-        });
+        }
     }
-    uwriteln!(serial, "{}", D!("done.\r\n\r")).unwrap_infallible();
+    uwriteln!(serial, "{}", D!("\r\ndone.\r\n\r")).unwrap_infallible();
 
     Ok(())
 }
@@ -239,11 +256,12 @@ pub fn eeprom_load(
     // SAFETY
     // lily has also blessed this function to work every time :3
     // (i love her sm :333)
+    uwrite!(serial, "{}", D!("program ")).unwrap_infallible();
     let mut command_buf = [0u8; size_of::<Option<BasicCommand>>()];
     for command in program {
         eeprom
             .read(offset, &mut command_buf)
-            .map_err(|_| EepromError::Load)?;
+            .map_err(|_| EepromError::LoadProgram)?;
         *command = unsafe {
             core::mem::transmute_copy::<[u8; size_of::<Option<BasicCommand>>()], Option<BasicCommand>>(
                 &command_buf,
@@ -254,13 +272,14 @@ pub fn eeprom_load(
             offset += 1;
         }
     }
-    uwrite!(serial, "{}", D!(" | ")).unwrap_infallible();
+    uwriteln!(serial, "{}", D!("\r")).unwrap_infallible();
 
+    uwrite!(serial, "{}", D!("string table ")).unwrap_infallible();
     let mut string_buf = [0u8; size_of::<Option<String>>()];
     for string in string_table {
         eeprom
             .read(offset, &mut string_buf)
-            .map_err(|_| EepromError::Load)?;
+            .map_err(|_| EepromError::LoadString)?;
         *string = unsafe {
             core::mem::transmute_copy::<[u8; size_of::<Option<String>>()], Option<String>>(
                 &string_buf,
@@ -271,7 +290,7 @@ pub fn eeprom_load(
             offset += 1;
         }
     }
-    uwriteln!(serial, "{}", D!("done.\r\n\r")).unwrap_infallible();
+    uwriteln!(serial, "{}", D!("\r\ndone.\r\n\r")).unwrap_infallible();
 
     Ok(())
 }

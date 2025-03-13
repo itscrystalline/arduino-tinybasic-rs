@@ -86,10 +86,10 @@ progmem! {
     pub static progmem string E_PIN_UNUSABLE = "pin is not usable\r";
     pub static progmem string E_PIN_RESERVED = "pin is reserved\r";
     pub static progmem string E_NOT_BOOL = "not 0 or 1\r";
-    pub static progmem string E_SAVE_ENCODE = "failed to encode program\r";
-    pub static progmem string E_SAVE_STORE = "failed to store program in EEPROM\r";
-    pub static progmem string E_LOAD = "failed to load from EEPROM\r";
-    pub static progmem string E_LOAD_DECODE = "failed to decode program\r";
+    pub static progmem string E_SAVE_PROGRAM = "failed to store program\r";
+    pub static progmem string E_SAVE_STRING_TABLE = "failed to store string table\r";
+    pub static progmem string E_LOAD_PROGRAM = "failed to load program\r";
+    pub static progmem string E_LOAD_STRING_TABLE = "failed to load string table\r";
 
 }
 
@@ -202,15 +202,15 @@ fn main() -> ! {
                                                         &string_table,
                                                     ) {
                                                         match e {
-                                                            EepromError::SaveEncode => uwriteln!(
+                                                            EepromError::SaveProgram => uwriteln!(
                                                                 &mut serial,
                                                                 "{}",
-                                                                E_SAVE_ENCODE
+                                                                E_SAVE_PROGRAM
                                                             ),
-                                                            EepromError::SaveStore => uwriteln!(
+                                                            EepromError::SaveString => uwriteln!(
                                                                 &mut serial,
                                                                 "{}",
-                                                                E_SAVE_STORE
+                                                                E_SAVE_STRING_TABLE
                                                             ),
                                                             _ => unreachable!(),
                                                         }
@@ -225,13 +225,17 @@ fn main() -> ! {
                                                         &mut string_table,
                                                     ) {
                                                         match e {
-                                                            EepromError::Load => {
-                                                                uwriteln!(&mut serial, "{}", E_LOAD)
+                                                            EepromError::LoadProgram => {
+                                                                uwriteln!(
+                                                                    &mut serial,
+                                                                    "{}",
+                                                                    E_LOAD_PROGRAM
+                                                                )
                                                             }
-                                                            EepromError::LoadDecode => uwriteln!(
+                                                            EepromError::LoadString => uwriteln!(
                                                                 &mut serial,
                                                                 "{}",
-                                                                E_LOAD_DECODE
+                                                                E_LOAD_STRING_TABLE
                                                             ),
                                                             _ => unreachable!(),
                                                         }
