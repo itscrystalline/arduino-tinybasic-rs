@@ -1,13 +1,15 @@
 use crate::{
     basic::{interpreter::BasicCommand, lexer::String},
-    BasicProgram, PROGRAM_LENGTH,
+    BasicProgram,
 };
 use arduino_hal::{
+    hal::port::PB3,
     port::{
         mode::{self, Floating},
         Pin,
     },
     prelude::*,
+    simple_pwm::{IntoPwmPin, Timer2Pwm},
     Eeprom,
 };
 use avr_progmem::progmem_display as D;
@@ -17,7 +19,76 @@ pub type Serial = arduino_hal::hal::usart::Usart0<arduino_hal::DefaultClock>;
 
 pub fn init() -> (Pins, Serial, Eeprom) {
     let dp = arduino_hal::Peripherals::take().unwrap();
-    Pins::init(dp)
+
+    let adc = arduino_hal::Adc::new(dp.ADC, Default::default());
+    let mut adc_opt = Some(adc);
+
+    let timer = Timer2Pwm::new(dp.TC2, arduino_hal::simple_pwm::Prescaler::Prescale64);
+
+    let eeprom = arduino_hal::Eeprom::new(dp.EEPROM);
+
+    let pins = arduino_hal::pins!(dp);
+
+    let analog = [
+        pins.a0
+            .into_analog_input(adc_opt.as_mut().unwrap())
+            .into_channel(),
+        pins.a1
+            .into_analog_input(adc_opt.as_mut().unwrap())
+            .into_channel(),
+        pins.a2
+            .into_analog_input(adc_opt.as_mut().unwrap())
+            .into_channel(),
+        pins.a3
+            .into_analog_input(adc_opt.as_mut().unwrap())
+            .into_channel(),
+        pins.a4
+            .into_analog_input(adc_opt.as_mut().unwrap())
+            .into_channel(),
+        pins.a5
+            .into_analog_input(adc_opt.as_mut().unwrap())
+            .into_channel(),
+    ];
+
+    let adc = adc_opt.take().unwrap();
+
+    (
+        Pins {
+            adc,
+            analog,
+            digital_input: [
+                Some(pins.d2.into_floating_input().downgrade()),
+                Some(pins.d3.into_floating_input().downgrade()),
+                Some(pins.d4.into_floating_input().downgrade()),
+                Some(pins.d5.into_floating_input().downgrade()),
+                Some(pins.d6.into_floating_input().downgrade()),
+                Some(pins.d7.into_floating_input().downgrade()),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            ],
+            digital_output: [
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(pins.d8.into_output().downgrade()),
+                Some(pins.d9.into_output().downgrade()),
+                Some(pins.d10.into_output().downgrade()),
+                None,
+                Some(pins.d12.into_output().downgrade()),
+                Some(pins.d13.into_output().downgrade()),
+            ],
+            pwm: pins.d11.into_output().into_pwm(&timer),
+        },
+        arduino_hal::default_serial!(dp, pins, 57600),
+        eeprom,
+    )
 }
 
 pub struct Pins {
@@ -25,11 +96,10 @@ pub struct Pins {
     analog: [arduino_hal::adc::Channel; 6],
     digital_input: [Option<Pin<mode::Input<Floating>>>; 12],
     digital_output: [Option<Pin<mode::Output>>; 12],
-    //pwm: [Option<Pin<mode::PwmOutput<TC>>>; 12],
+    pwm: Pin<mode::PwmOutput<Timer2Pwm>, PB3>,
 }
 
 pub enum PinError {
-    Reserved,
     NonAddressable,
     NotInput,
     NotOutput,
@@ -37,96 +107,31 @@ pub enum PinError {
 }
 
 impl Pins {
-    pub fn init(dp: arduino_hal::Peripherals) -> (Self, Serial, Eeprom) {
-        let adc = arduino_hal::Adc::new(dp.ADC, Default::default());
-        let eeprom = arduino_hal::Eeprom::new(dp.EEPROM);
-        let mut adc_opt = Some(adc);
-        let pins = arduino_hal::pins!(dp);
-
-        let analog = [
-            pins.a0
-                .into_analog_input(adc_opt.as_mut().unwrap())
-                .into_channel(),
-            pins.a1
-                .into_analog_input(adc_opt.as_mut().unwrap())
-                .into_channel(),
-            pins.a2
-                .into_analog_input(adc_opt.as_mut().unwrap())
-                .into_channel(),
-            pins.a3
-                .into_analog_input(adc_opt.as_mut().unwrap())
-                .into_channel(),
-            pins.a4
-                .into_analog_input(adc_opt.as_mut().unwrap())
-                .into_channel(),
-            pins.a5
-                .into_analog_input(adc_opt.as_mut().unwrap())
-                .into_channel(),
-        ];
-
-        let adc = adc_opt.take().unwrap();
-
-        (
-            Self {
-                adc,
-                analog,
-                digital_input: [
-                    Some(pins.d2.into_floating_input().downgrade()),
-                    Some(pins.d3.into_floating_input().downgrade()),
-                    Some(pins.d4.into_floating_input().downgrade()),
-                    Some(pins.d5.into_floating_input().downgrade()),
-                    Some(pins.d6.into_floating_input().downgrade()),
-                    Some(pins.d7.into_floating_input().downgrade()),
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                ],
-                digital_output: [
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    Some(pins.d8.into_output().downgrade()),
-                    Some(pins.d9.into_output().downgrade()),
-                    Some(pins.d10.into_output().downgrade()),
-                    Some(pins.d11.into_output().downgrade()),
-                    Some(pins.d12.into_output().downgrade()),
-                    Some(pins.d13.into_output().downgrade()),
-                ],
-                //pwm: [const { None }; 12],
-            },
-            arduino_hal::Usart::new(
-                dp.USART0,
-                pins.d0,
-                pins.d1.into_output(),
-                arduino_hal::hal::usart::BaudrateArduinoExt::into_baudrate(57600),
-            ),
-            eeprom,
-        )
-    }
-
-    fn check_digital(&self, pin_num: usize) -> Result<(), PinError> {
-        match (2..=13).contains(&pin_num) {
-            true => Ok(()),
-            false => Err(PinError::NonAddressable),
+    fn check_pwm(&self, pin_num: u8) -> Result<(), PinError> {
+        if pin_num == 11 {
+            Ok(())
+        } else {
+            Err(PinError::NotPwm)
         }
     }
-    fn check_analog(&self, pin_num: usize) -> Result<(), PinError> {
+    fn check_digital(&self, pin_num: u8) -> Result<(), PinError> {
+        match (2..=13).contains(&pin_num) {
+            false => Err(PinError::NonAddressable),
+            true if pin_num == 11 => Err(PinError::NonAddressable),
+            true => Ok(()),
+        }
+    }
+    fn check_analog(&self, pin_num: u8) -> Result<(), PinError> {
         match (0..=5).contains(&pin_num) {
             true => Ok(()),
             false => Err(PinError::NonAddressable),
         }
     }
 
-    pub fn make_digital_output(&mut self, pin_num: usize) -> Result<(), PinError> {
+    pub fn make_digital_output(&mut self, pin_num: u8) -> Result<(), PinError> {
         self.check_digital(pin_num)?;
 
-        let pin_num = pin_num - 2;
+        let pin_num = pin_num as usize - 2;
         match self.digital_input[pin_num].take() {
             Some(pin) => {
                 _ = self.digital_output[pin_num].insert(pin.into_output().downgrade());
@@ -135,10 +140,10 @@ impl Pins {
             None => Err(PinError::NotInput),
         }
     }
-    pub fn make_digital_input(&mut self, pin_num: usize) -> Result<(), PinError> {
+    pub fn make_digital_input(&mut self, pin_num: u8) -> Result<(), PinError> {
         self.check_digital(pin_num)?;
 
-        let pin_num = pin_num - 2;
+        let pin_num = pin_num as usize - 2;
         match self.digital_output[pin_num].take() {
             Some(pin) => {
                 _ = self.digital_input[pin_num].insert(pin.into_floating_input().downgrade());
@@ -148,25 +153,36 @@ impl Pins {
         }
     }
 
-    pub fn read_analog(&mut self, pin_num: usize) -> Result<usize, PinError> {
+    pub fn write_analog(&mut self, pin_num: u8, duty: u8) -> Result<(), PinError> {
+        self.check_pwm(pin_num)?;
+
+        if duty == 0 {
+            self.pwm.disable();
+        } else {
+            self.pwm.set_duty(duty);
+            self.pwm.enable();
+        }
+        Ok(())
+    }
+    pub fn read_analog(&mut self, pin_num: u8) -> Result<u16, PinError> {
         self.check_analog(pin_num)?;
 
-        Ok(self.adc.read_blocking(&self.analog[pin_num]) as usize)
+        Ok(self.adc.read_blocking(&self.analog[pin_num as usize]))
     }
-    pub fn read_digital(&mut self, pin_num: usize) -> Result<bool, PinError> {
+    pub fn read_digital(&mut self, pin_num: u8) -> Result<bool, PinError> {
         self.check_digital(pin_num)?;
 
-        let pin_num = pin_num - 2;
+        let pin_num = pin_num as usize - 2;
         if let Some(ref mut pin) = self.digital_input[pin_num] {
             Ok(pin.is_high())
         } else {
             Err(PinError::NotInput)
         }
     }
-    pub fn write_digital(&mut self, pin_num: usize, value: bool) -> Result<(), PinError> {
+    pub fn write_digital(&mut self, pin_num: u8, value: bool) -> Result<(), PinError> {
         self.check_digital(pin_num)?;
 
-        let pin_num = pin_num - 2;
+        let pin_num = pin_num as usize - 2;
         if let Some(ref mut pin) = self.digital_output[pin_num] {
             match value {
                 true => pin.set_high(),

@@ -108,7 +108,10 @@ pub enum Keyword {
     Load,
     Save,
 
+    MakeInput,
+    MakeOutput,
     AnalogRead,
+    AnalogWrite,
     DigitalRead,
     DigitalWrite,
 }
@@ -132,7 +135,10 @@ impl Keyword {
             "LOAD" => Ok(Keyword::Load),
             "SAVE" => Ok(Keyword::Save),
 
+            "MKIN" => Ok(Keyword::MakeInput),
+            "MKOUT" => Ok(Keyword::MakeOutput),
             "AREAD" => Ok(Keyword::AnalogRead),
+            "AWRITE" => Ok(Keyword::AnalogWrite),
             "DREAD" => Ok(Keyword::DigitalRead),
             "DWRITE" => Ok(Keyword::DigitalWrite),
 
@@ -219,6 +225,11 @@ impl Token {
                 }
                 '"' | '\'' => match string_buffer {
                     Some(string) => {
+                        if ch == '"' {
+                            string
+                                .try_push_str("\r\n")
+                                .map_err(|_| ParseError::Capacity)?;
+                        }
                         if tokens.try_push(Token::String(*string)).is_err() {
                             return Err(ParseError::TooManyTokens);
                         };

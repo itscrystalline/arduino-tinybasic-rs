@@ -10,9 +10,10 @@ use arduino::{EepromError, Serial};
 use arduino_hal::prelude::*;
 use arrayvec::ArrayString;
 use avr_progmem::progmem;
+use avr_progmem::progmem_display as D;
 use basic::{
     expression::Expression,
-    interpreter::{BasicCommand, BasicControlFlow, BasicLine, InterpretationError},
+    interpreter::{BasicCommand, BasicControlFlow, BasicLine, InterpretationError, MathToken},
     lexer::{ParseError, String, Token, TokenBuffer},
 };
 use panic_halt as _;
@@ -57,40 +58,38 @@ fn print_sizes(serial: &mut Serial) {
 
 progmem! {
     static progmem string GREET = "Starting TinyBASIC...\r";
+    static progmem string GREET2 = "(made by @itscrystalline on github, source code at https://github.com/itscrystalline/arduino-tinybasic-rs)\r";
     static progmem string READY = "READY\r";
     static progmem string PROMPT = "> ";
-    static progmem string SAVE = " bytes saved to EEPROM\r";
-    static progmem string LOAD = " bytes loaded from EEPROM\r";
 
-    pub static progmem string E_LINE_TOO_MUCH = "line num too much\r";
-    pub static progmem string E_ARGS_MISSING = "arguments missing\r";
-    pub static progmem string E_ARGS_UNEXPECTED = "arguments unexpected\r";
-    pub static progmem string E_UNIMPLEMENTED_TOKEN = "unimplemented token\r";
-    pub static progmem string E_MATH_STACK = "math stack limit reached\r";
-    pub static progmem string E_STR_TAB_FULL = "string table full\r";
-    pub static progmem string E_MATH_IN_BOOL = "too much math in bool expr\r";
-    pub static progmem string E_TOKENS = "too many tokens\r";
-    pub static progmem string E_MALFORMED = "malformed\r";
-    pub static progmem string E_STR_CAP_FULL = "str cap full\r";
-    pub static progmem string E_NUM_OVERFLOW = "number overflow: max is ";
-    pub static progmem string E_UNIMPLEMENTED_PRINT = "UNIMPLEMENTED PRINT\r";
-    pub static progmem string E_INCOMPLETE_EXPR = "incomplete expression\r";
-    pub static progmem string E_VAL_OVERFLOW = "value overflowed\r";
-    pub static progmem string E_VAL_UNDERFLOW = "value underflowed\r";
-    pub static progmem string E_DIV_ZERO = "division by zero\r";
-    pub static progmem string E_NUM_STACK_FULL = "number stack full\r";
-    pub static progmem string E_UNIMPLEMENTED = "UNIMPLEMENTED\r";
-    pub static progmem string E_PIN_NOT_INPUT = "pin is not input\r";
-    pub static progmem string E_PIN_NOT_OUTPUT = "pin is not output\r";
-    pub static progmem string E_PIN_NOT_PWM = "pin is not pwm\r";
-    pub static progmem string E_PIN_UNUSABLE = "pin is not usable\r";
-    pub static progmem string E_PIN_RESERVED = "pin is reserved\r";
-    pub static progmem string E_NOT_BOOL = "not 0 or 1\r";
-    pub static progmem string E_SAVE_PROGRAM = "failed to store program\r";
-    pub static progmem string E_SAVE_STRING_TABLE = "failed to store string table\r";
-    pub static progmem string E_LOAD_PROGRAM = "failed to load program\r";
-    pub static progmem string E_LOAD_STRING_TABLE = "failed to load string table\r";
-
+    pub static progmem string E_LINE_TOO_MUCH = "lin2much\r";
+    pub static progmem string E_ARGS_MISSING = "no args\r";
+    pub static progmem string E_ARGS_UNEXPECTED = "bad args\r";
+    pub static progmem string E_UNIMPLEMENTED_TOKEN = "no token\r";
+    pub static progmem string E_MATH_STACK = "mathfull\r";
+    pub static progmem string E_STR_TAB_FULL = "strfull\r";
+    pub static progmem string E_MATH_IN_BOOL = "mathbool\r";
+    pub static progmem string E_TOKENS = "2manytok\r";
+    pub static progmem string E_MALFORMED = "badform\r";
+    pub static progmem string E_STR_CAP_FULL = "strcap\r";
+    pub static progmem string E_NUM_OVERFLOW = "numovfl\r";
+    pub static progmem string E_UNIMPLEMENTED_PRINT = "noprint\r";
+    pub static progmem string E_INCOMPLETE_EXPR = "incomplete\r";
+    pub static progmem string E_VAL_OVERFLOW = "valovfl\r";
+    pub static progmem string E_VAL_UNDERFLOW = "valundr\r";
+    pub static progmem string E_DIV_ZERO = "div0\r";
+    pub static progmem string E_NUM_STACK_FULL = "numstack\r";
+    pub static progmem string E_UNIMPLEMENTED = "noimpl\r";
+    pub static progmem string E_PIN_NOT_INPUT = "notin\r";
+    pub static progmem string E_PIN_NOT_OUTPUT = "notout\r";
+    pub static progmem string E_PIN_NOT_PWM = "notpwm\r";
+    pub static progmem string E_PIN_UNUSABLE = "badpin\r";
+    pub static progmem string E_NOT_BOOL = "not01\r";
+    pub static progmem string E_INVALID_DUTY = "badduty\r";
+    pub static progmem string E_SAVE_PROGRAM = "nosave\r";
+    pub static progmem string E_SAVE_STRING_TABLE = "nostrsv\r";
+    pub static progmem string E_LOAD_PROGRAM = "noload\r";
+    pub static progmem string E_LOAD_STRING_TABLE = "nostrld\r";
 }
 
 pub type BasicProgram = [Option<BasicCommand>; PROGRAM_LENGTH];
@@ -100,6 +99,7 @@ fn main() -> ! {
     let (mut pins, mut serial, mut eeprom) = arduino::init();
 
     uwriteln!(&mut serial, "{}", GREET).unwrap_infallible();
+    uwriteln!(&mut serial, "{}", GREET2).unwrap_infallible();
 
     #[cfg(feature = "full")]
     print_sizes(&mut serial);
@@ -345,7 +345,7 @@ pub fn clear(
 fn list(
     serial: &mut Serial,
     program: &BasicProgram,
-    variables: &[usize],
+    _variables: &[usize],
     string_table: &[Option<String>],
 ) {
     program.iter().enumerate().for_each(|(line_num, l)| {
@@ -353,15 +353,15 @@ fn list(
             uwrite!(serial, "{} ", line_num).unwrap_infallible();
 
             match line {
-                BasicCommand::List => uwriteln!(serial, "LIST\r").unwrap_infallible(),
-                BasicCommand::End => uwriteln!(serial, "END\r").unwrap_infallible(),
-                BasicCommand::Run => uwriteln!(serial, "RUN\r").unwrap_infallible(),
-                BasicCommand::Rem => uwriteln!(serial, "REM\r").unwrap_infallible(),
+                BasicCommand::List => uwriteln!(serial, "{}", D!("LIST\r")).unwrap_infallible(),
+                BasicCommand::End => uwriteln!(serial, "{}", D!("END\r")).unwrap_infallible(),
+                BasicCommand::Run => uwriteln!(serial, "{}", D!("RUN\r")).unwrap_infallible(),
+                BasicCommand::Rem => uwriteln!(serial, "{}", D!("REM\r")).unwrap_infallible(),
                 BasicCommand::Goto(line_num) if line_num.is_some() => {
-                    uwriteln!(serial, "GOTO {}\r", line_num.unwrap()).unwrap_infallible()
+                    uwriteln!(serial, "{}{}\r", D!("GOTO "), line_num.unwrap()).unwrap_infallible()
                 }
                 BasicCommand::Print(Some(expr)) => {
-                    uwrite!(serial, "PRINT ").unwrap_infallible();
+                    uwrite!(serial, "{}", D!("PRINT ")).unwrap_infallible();
                     match expr {
                         Expression::String(str) => {
                             uwrite!(serial, "\"").unwrap_infallible();
@@ -372,17 +372,28 @@ fn list(
                             uwrite!(serial, "\"\r\n").unwrap_infallible();
                         }
                         Expression::Math(_) => {
-                            uwriteln!(serial, "<MATHEXPR>\r").unwrap_infallible()
+                            uwriteln!(serial, "{}\r", D!("<MATHEXPR>")).unwrap_infallible()
                         }
-                        Expression::Boolean(_, Some(rel), _) => {
-                            uwriteln!(serial, "<MATHEXPR> {} <MATHEXPR>\r", rel).unwrap_infallible()
-                        }
+                        Expression::Boolean(_, Some(rel), _) => uwriteln!(
+                            serial,
+                            "{}{}{}\r",
+                            D!("<MATHEXPR> "),
+                            rel,
+                            D!(" <MATHEXPR>")
+                        )
+                        .unwrap_infallible(),
                         _ => uwriteln!(serial, "{}", E_UNIMPLEMENTED_PRINT).unwrap_infallible(),
                     }
                 }
                 BasicCommand::Let(Some(var_idx), Some(_)) => {
-                    uwriteln!(serial, "LET {} = <MATHEXPR>\r", (*var_idx + b'A') as char)
-                        .unwrap_infallible();
+                    uwriteln!(
+                        serial,
+                        "{}{}{}",
+                        D!("LET "),
+                        (*var_idx + b'A') as char,
+                        D!(" = <MATHEXPR>\r")
+                    )
+                    .unwrap_infallible();
                 }
                 BasicCommand::If(
                     Expression::Boolean(Some(lhs), Some(op), Some(rhs)),
@@ -390,6 +401,42 @@ fn list(
                 ) => {
                     uwriteln!(serial, "IF {} {} {} THEN {}\r", lhs, op, rhs, goto_dest)
                         .unwrap_infallible();
+                }
+                BasicCommand::MakeInput(Some(pin)) => {
+                    uwriteln!(serial, "{}{}\r", D!("MKIN "), pin).unwrap_infallible()
+                }
+                BasicCommand::MakeOutput(Some(pin)) => {
+                    uwriteln!(serial, "{}{}\r", D!("MKOUT "), pin).unwrap_infallible()
+                }
+                BasicCommand::AnalogRead(Some(pin), Some(MathToken::Variable(idx)))
+                | BasicCommand::DigitalRead(Some(pin), Some(MathToken::Variable(idx))) => {
+                    match line {
+                        BasicCommand::AnalogRead(_, _) => uwrite!(serial, "A").unwrap_infallible(),
+                        BasicCommand::DigitalRead(_, _) => uwrite!(serial, "D").unwrap_infallible(),
+                        _ => (),
+                    }
+                    uwriteln!(serial, "{}{} {}\r", D!("READ "), pin, (idx + b'A') as char)
+                        .unwrap_infallible()
+                }
+                BasicCommand::AnalogWrite(Some(pin), Some(token))
+                | BasicCommand::DigitalWrite(Some(pin), Some(token)) => {
+                    match line {
+                        BasicCommand::AnalogWrite(_, _) => uwrite!(serial, "A").unwrap_infallible(),
+                        BasicCommand::DigitalWrite(_, _) => {
+                            uwrite!(serial, "D").unwrap_infallible()
+                        }
+                        _ => (),
+                    }
+                    uwrite!(serial, "{}{} ", D!("WRITE "), pin).unwrap_infallible();
+                    match token {
+                        MathToken::Variable(idx) => {
+                            uwriteln!(serial, "{}\r", (idx + b'A') as char).unwrap_infallible()
+                        }
+                        MathToken::Literal(num) => {
+                            uwriteln!(serial, "{}\r", num).unwrap_infallible()
+                        }
+                        _ => uwriteln!(serial, "{}", E_UNIMPLEMENTED_PRINT).unwrap_infallible(),
+                    }
                 }
                 _ => uwriteln!(serial, "{}", E_UNIMPLEMENTED_PRINT).unwrap_infallible(),
             }

@@ -7,9 +7,9 @@ use ufmt::{uDebug, uDisplay, uwrite, uwriteln};
 use crate::{
     arduino::{PinError, Pins},
     basic::lexer::{ComparisionOperator, ExpectedArgument, Keyword, Token},
-    put_string_table, BasicProgram, Serial, E_DIV_ZERO, E_INCOMPLETE_EXPR, E_NOT_BOOL,
-    E_NUM_STACK_FULL, E_PIN_NOT_INPUT, E_PIN_NOT_OUTPUT, E_PIN_NOT_PWM, E_PIN_RESERVED,
-    E_PIN_UNUSABLE, E_UNIMPLEMENTED, E_VAL_OVERFLOW, E_VAL_UNDERFLOW, PROGRAM_LENGTH,
+    put_string_table, BasicProgram, Serial, E_DIV_ZERO, E_INCOMPLETE_EXPR, E_INVALID_DUTY,
+    E_NOT_BOOL, E_NUM_STACK_FULL, E_PIN_NOT_INPUT, E_PIN_NOT_OUTPUT, E_PIN_NOT_PWM, E_PIN_UNUSABLE,
+    E_UNIMPLEMENTED, E_VAL_OVERFLOW, E_VAL_UNDERFLOW,
 };
 
 use super::{
@@ -59,10 +59,13 @@ impl uDisplay for MathToken {
 #[repr(C)]
 #[derive(Clone)]
 pub enum BasicCommand {
+    MakeInput(Option<u8>),
+    MakeOutput(Option<u8>),
+    Goto(Option<usize>),
+    AnalogWrite(Option<u8>, Option<MathToken>),
     AnalogRead(Option<u8>, Option<MathToken>),
     DigitalRead(Option<u8>, Option<MathToken>),
     DigitalWrite(Option<u8>, Option<MathToken>),
-    Goto(Option<usize>),
     Print(Option<Expression>),
     If(Expression, Option<usize>),
     Let(Option<u8>, Option<Expression>),
@@ -89,7 +92,6 @@ impl BasicCommand {
                         .unwrap()
                         .chars()
                         .for_each(|ch| uwrite!(serial, "{}", ch).unwrap_infallible());
-                    uwriteln!(serial, "\r").unwrap_infallible();
                 }
                 Expression::Math(numbers) => {
                     let result = Expression::evaluate_math(numbers.clone(), variables);
@@ -202,32 +204,43 @@ impl BasicCommand {
                     }
                 }
             }
-            BasicCommand::AnalogRead(Some(pin), Some(MathToken::Variable(var_idx))) => {
-                match pins.read_analog(*pin as usize) {
-                    Ok(read) => {
-                        variables[*var_idx as usize] = read;
-                    }
-                    Err(e) => match e {
+            BasicCommand::MakeInput(Some(pin)) | BasicCommand::MakeOutput(Some(pin)) => {
+                let res = match self {
+                    BasicCommand::MakeInput(_) => pins.make_digital_input(*pin),
+                    BasicCommand::MakeOutput(_) => pins.make_digital_output(*pin),
+                    _ => unreachable!(),
+                };
+                if let Err(e) = res {
+                    match e {
                         PinError::NotInput => uwriteln!(serial, "{}", E_PIN_NOT_INPUT),
                         PinError::NotOutput => uwriteln!(serial, "{}", E_PIN_NOT_OUTPUT),
-                        PinError::NotPwm => uwriteln!(serial, "{}", E_PIN_NOT_PWM),
                         PinError::NonAddressable => uwriteln!(serial, "{}", E_PIN_UNUSABLE),
-                        PinError::Reserved => uwriteln!(serial, "{}", E_PIN_RESERVED),
+                        _ => unreachable!(),
+                    }
+                    .unwrap_infallible();
+                }
+            }
+            BasicCommand::AnalogRead(Some(pin), Some(MathToken::Variable(var_idx))) => {
+                match pins.read_analog(*pin) {
+                    Ok(read) => {
+                        variables[*var_idx as usize] = read as usize;
+                    }
+                    Err(e) => match e {
+                        PinError::NonAddressable => uwriteln!(serial, "{}", E_PIN_UNUSABLE),
+                        _ => unreachable!(),
                     }
                     .unwrap_infallible(),
                 }
             }
             BasicCommand::DigitalRead(Some(pin), Some(MathToken::Variable(var_idx))) => {
-                match pins.read_digital(*pin as usize) {
+                match pins.read_digital(*pin) {
                     Ok(read) => {
                         variables[*var_idx as usize] = read as usize;
                     }
                     Err(e) => match e {
                         PinError::NotInput => uwriteln!(serial, "{}", E_PIN_NOT_INPUT),
-                        PinError::NotOutput => uwriteln!(serial, "{}", E_PIN_NOT_OUTPUT),
-                        PinError::NotPwm => uwriteln!(serial, "{}", E_PIN_NOT_PWM),
                         PinError::NonAddressable => uwriteln!(serial, "{}", E_PIN_UNUSABLE),
-                        PinError::Reserved => uwriteln!(serial, "{}", E_PIN_RESERVED),
+                        _ => unreachable!(),
                     }
                     .unwrap_infallible(),
                 }
@@ -251,13 +264,32 @@ impl BasicCommand {
                         }
                     }
                 };
-                if let Err(e) = pins.write_digital(*pin as usize, bool_val) {
+                if let Err(e) = pins.write_digital(*pin, bool_val) {
                     match e {
-                        PinError::NotInput => uwriteln!(serial, "{}", E_PIN_NOT_INPUT),
                         PinError::NotOutput => uwriteln!(serial, "{}", E_PIN_NOT_OUTPUT),
-                        PinError::NotPwm => uwriteln!(serial, "{}", E_PIN_NOT_PWM),
                         PinError::NonAddressable => uwriteln!(serial, "{}", E_PIN_UNUSABLE),
-                        PinError::Reserved => uwriteln!(serial, "{}", E_PIN_RESERVED),
+                        _ => unreachable!(),
+                    }
+                    .unwrap_infallible();
+                }
+            }
+            BasicCommand::AnalogWrite(Some(pin), Some(duty)) => {
+                let duty = match duty {
+                    MathToken::Literal(num) => *num,
+                    MathToken::Variable(idx) => variables[*idx as usize],
+                    _ => {
+                        uwriteln!(serial, "{}", E_INCOMPLETE_EXPR).unwrap_infallible();
+                        return BasicControlFlow::End;
+                    }
+                };
+                if duty > 255 {
+                    uwriteln!(serial, "{}", E_INVALID_DUTY).unwrap_infallible();
+                    return BasicControlFlow::End;
+                }
+                if let Err(e) = pins.write_analog(*pin, duty as u8) {
+                    match e {
+                        PinError::NotPwm => uwriteln!(serial, "{}", E_PIN_NOT_PWM),
+                        _ => unreachable!(),
                     }
                     .unwrap_infallible();
                 }
@@ -371,12 +403,24 @@ impl BasicLine {
                                 return Err(InterpretationError::UnexpectedArgs);
                             }
                         }
-                        Keyword::DigitalRead | Keyword::AnalogRead | Keyword::DigitalWrite => {
+                        Keyword::DigitalRead
+                        | Keyword::DigitalWrite
+                        | Keyword::AnalogRead
+                        | Keyword::AnalogWrite => {
                             expected = Some(ExpectedArgument::Number);
                             command = match kw {
                                 Keyword::DigitalRead => BasicCommand::DigitalRead(None, None),
                                 Keyword::DigitalWrite => BasicCommand::DigitalWrite(None, None),
                                 Keyword::AnalogRead => BasicCommand::AnalogRead(None, None),
+                                Keyword::AnalogWrite => BasicCommand::AnalogWrite(None, None),
+                                _ => unreachable!(),
+                            };
+                        }
+                        Keyword::MakeInput | Keyword::MakeOutput => {
+                            expected = Some(ExpectedArgument::Number);
+                            command = match kw {
+                                Keyword::MakeInput => BasicCommand::MakeInput(None),
+                                Keyword::MakeOutput => BasicCommand::MakeOutput(None),
                                 _ => unreachable!(),
                             };
                         }
@@ -438,17 +482,26 @@ impl BasicLine {
                             None,
                         ) => *expr = Some(MathToken::Literal(num)),
                         BasicCommand::AnalogRead(ref mut pin, None)
+                        | BasicCommand::AnalogWrite(ref mut pin, None)
                         | BasicCommand::DigitalRead(ref mut pin, None)
                         | BasicCommand::DigitalWrite(ref mut pin, None)
+                        | BasicCommand::MakeOutput(ref mut pin)
+                        | BasicCommand::MakeInput(ref mut pin)
                             if pin.is_none() =>
                         {
                             *pin = Some(
                                 num.try_into()
                                     .map_err(|_| InterpretationError::UnexpectedArgs)?,
                             );
-                            expected = Some(ExpectedArgument::Expression);
+                            expected = match command {
+                                BasicCommand::MakeOutput(_) | BasicCommand::MakeInput(_) => None,
+                                _ => Some(ExpectedArgument::Expression),
+                            };
                         }
-                        BasicCommand::DigitalWrite(Some(_), ref mut val) if val.is_none() => {
+                        BasicCommand::DigitalWrite(Some(_), ref mut val)
+                        | BasicCommand::AnalogWrite(Some(_), ref mut val)
+                            if val.is_none() =>
+                        {
                             *val = Some(MathToken::Literal(num));
                             expected = None;
                         }
@@ -483,6 +536,7 @@ impl BasicLine {
                         BasicCommand::DigitalWrite(Some(_), ref mut val)
                         | BasicCommand::DigitalRead(Some(_), ref mut val)
                         | BasicCommand::AnalogRead(Some(_), ref mut val)
+                        | BasicCommand::AnalogWrite(Some(_), ref mut val)
                             if val.is_none() =>
                         {
                             *val = Some(MathToken::Variable(var_idx));
