@@ -438,6 +438,18 @@ fn list(
                         _ => uwriteln!(serial, "{}", E_UNIMPLEMENTED_PRINT).unwrap_infallible(),
                     }
                 }
+                BasicCommand::DelayMs(Some(ms)) => {
+                    uwrite!(serial, "{}", D!("DELAY ")).unwrap_infallible();
+                    match ms {
+                        MathToken::Variable(idx) => {
+                            uwriteln!(serial, "{}\r", (idx + b'A') as char).unwrap_infallible()
+                        }
+                        MathToken::Literal(num) => {
+                            uwriteln!(serial, "{}\r", num).unwrap_infallible()
+                        }
+                        _ => uwriteln!(serial, "{}", E_UNIMPLEMENTED_PRINT).unwrap_infallible(),
+                    }
+                }
                 _ => uwriteln!(serial, "{}", E_UNIMPLEMENTED_PRINT).unwrap_infallible(),
             }
         }

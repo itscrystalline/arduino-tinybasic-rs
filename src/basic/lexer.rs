@@ -108,6 +108,7 @@ pub enum Keyword {
     Load,
     Save,
 
+    DelayMs,
     MakeInput,
     MakeOutput,
     AnalogRead,
@@ -135,6 +136,7 @@ impl Keyword {
             "LOAD" => Ok(Keyword::Load),
             "SAVE" => Ok(Keyword::Save),
 
+            "DELAY" => Ok(Keyword::DelayMs),
             "MKIN" => Ok(Keyword::MakeInput),
             "MKOUT" => Ok(Keyword::MakeOutput),
             "AREAD" => Ok(Keyword::AnalogRead),

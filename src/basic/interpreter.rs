@@ -1,6 +1,6 @@
 use core::char;
 
-use arduino_hal::prelude::*;
+use arduino_hal::{delay_ms, hal::delay, prelude::*};
 use arrayvec::ArrayVec;
 use ufmt::{uDebug, uDisplay, uwrite, uwriteln};
 
@@ -62,6 +62,7 @@ pub enum BasicCommand {
     MakeInput(Option<u8>),
     MakeOutput(Option<u8>),
     Goto(Option<usize>),
+    DelayMs(Option<MathToken>),
     AnalogWrite(Option<u8>, Option<MathToken>),
     AnalogRead(Option<u8>, Option<MathToken>),
     DigitalRead(Option<u8>, Option<MathToken>),
@@ -294,6 +295,17 @@ impl BasicCommand {
                     .unwrap_infallible();
                 }
             }
+            BasicCommand::DelayMs(Some(ms)) => {
+                let ms = match ms {
+                    MathToken::Literal(lit) => *lit,
+                    MathToken::Variable(idx) => variables[*idx as usize],
+                    _ => {
+                        uwriteln!(serial, "{}", E_INCOMPLETE_EXPR).unwrap_infallible();
+                        return BasicControlFlow::End;
+                    }
+                };
+                delay_ms(ms as u32);
+            }
             BasicCommand::Rem => (),
             _ => uwriteln!(serial, "{}", E_UNIMPLEMENTED).unwrap_infallible(),
         }
@@ -424,6 +436,10 @@ impl BasicLine {
                                 _ => unreachable!(),
                             };
                         }
+                        Keyword::DelayMs => {
+                            expected = Some(ExpectedArgument::Expression);
+                            command = BasicCommand::DelayMs(None);
+                        }
                         _ => return Err(InterpretationError::UnimplementedToken),
                     },
                     Token::String(str) => match command {
@@ -498,7 +514,8 @@ impl BasicLine {
                                 _ => Some(ExpectedArgument::Expression),
                             };
                         }
-                        BasicCommand::DigitalWrite(Some(_), ref mut val)
+                        BasicCommand::DelayMs(ref mut val)
+                        | BasicCommand::DigitalWrite(Some(_), ref mut val)
                         | BasicCommand::AnalogWrite(Some(_), ref mut val)
                             if val.is_none() =>
                         {
@@ -533,7 +550,8 @@ impl BasicLine {
                             | Expression::Boolean(Some(_), Some(_), ref mut expr),
                             None,
                         ) => *expr = Some(MathToken::Variable(var_idx)),
-                        BasicCommand::DigitalWrite(Some(_), ref mut val)
+                        BasicCommand::DelayMs(ref mut val)
+                        | BasicCommand::DigitalWrite(Some(_), ref mut val)
                         | BasicCommand::DigitalRead(Some(_), ref mut val)
                         | BasicCommand::AnalogRead(Some(_), ref mut val)
                         | BasicCommand::AnalogWrite(Some(_), ref mut val)
@@ -601,18 +619,8 @@ impl BasicLine {
         }
 
         match command {
-            BasicCommand::Print(Some(ref mut expr)) => {
-                expected = None;
-                if let Expression::Math(ref mut tokens) = expr {
-                    while let Some(op) = operator_stack.pop() {
-                        tokens
-                            .try_push(MathToken::Operator(op))
-                            .map_err(|_| InterpretationError::StackFull)?;
-                    }
-                    tokens.reverse();
-                }
-            }
-            BasicCommand::Let(Some(_), Some(ref mut expr)) => {
+            BasicCommand::Print(Some(ref mut expr))
+            | BasicCommand::Let(Some(_), Some(ref mut expr)) => {
                 expected = None;
                 if let Expression::Math(ref mut tokens) = expr {
                     while let Some(op) = operator_stack.pop() {
